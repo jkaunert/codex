@@ -12,6 +12,7 @@ use axum::extract::ws::WebSocket;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
+use axum::http::header::ORIGIN;
 use axum::response::IntoResponse;
 use axum::routing::any;
 use axum::routing::get;
@@ -177,6 +178,10 @@ async fn websocket_upgrade_handler(
     headers: HeaderMap,
     State(state): State<WebSocketListenerState>,
 ) -> impl IntoResponse {
+    if state.auth.is_none() && headers.contains_key(ORIGIN) {
+        warn!(%peer_addr, "websocket client rejected by origin");
+        return StatusCode::FORBIDDEN.into_response();
+    }
     if let Some(auth) = &state.auth {
         let provided_token = headers
             .get(WEBSOCKET_AUTH_TOKEN_HEADER)
