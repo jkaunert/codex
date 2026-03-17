@@ -1013,6 +1013,7 @@ fn app_server_codex_error_info_to_core(
 
 #[cfg(test)]
 mod tests {
+    use super::command_execution_started_event;
     use super::server_notification_thread_events;
     use super::thread_snapshot_events;
     use super::turn_snapshot_events;
