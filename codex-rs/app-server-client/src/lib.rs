@@ -1187,6 +1187,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn remote_connect_rejects_non_loopback_ws_when_auth_configured() {
+        let result = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
+            websocket_url: "ws://example.com:4500".to_string(),
+            auth_token: Some("remote-bearer-token".to_string()),
+            ..test_remote_connect_args("ws://127.0.0.1:1".to_string())
+        })
+        .await;
+        let err = match result {
+            Ok(_) => panic!("non-loopback ws should be rejected before connect"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+        assert!(
+            err.to_string()
+                .contains("remote auth tokens require `wss://` or loopback `ws://` URLs")
+        );
+    }
+
+    #[test]
+    fn remote_auth_token_transport_policy_allows_wss_and_loopback_ws() {
+        assert!(crate::remote::websocket_url_supports_auth_token(
+            &url::Url::parse("wss://example.com:443").expect("wss URL should parse")
+        ));
+        assert!(crate::remote::websocket_url_supports_auth_token(
+            &url::Url::parse("ws://127.0.0.1:4500").expect("loopback ws URL should parse")
+        ));
+        assert!(!crate::remote::websocket_url_supports_auth_token(
+            &url::Url::parse("ws://example.com:4500").expect("non-loopback ws URL should parse")
+        ));
+    }
+
+    #[tokio::test]
     async fn remote_duplicate_request_id_keeps_original_waiter() {
         let (first_request_seen_tx, first_request_seen_rx) = tokio::sync::oneshot::channel();
         let websocket_url = start_test_remote_server(|mut websocket| async move {

@@ -89,6 +89,16 @@ impl RemoteAppServerConnectArgs {
     }
 }
 
+pub(crate) fn websocket_url_supports_auth_token(url: &Url) -> bool {
+    match (url.scheme(), url.host()) {
+        ("wss", Some(_)) => true,
+        ("ws", Some(url::Host::Domain(domain))) => domain.eq_ignore_ascii_case("localhost"),
+        ("ws", Some(url::Host::Ipv4(addr))) => addr.is_loopback(),
+        ("ws", Some(url::Host::Ipv6(addr))) => addr.is_loopback(),
+        _ => false,
+    }
+}
+
 enum RemoteClientCommand {
     Request {
         request: Box<ClientRequest>,
@@ -135,6 +145,14 @@ impl RemoteAppServerClient {
                 format!("invalid websocket URL `{websocket_url}`: {err}"),
             )
         })?;
+        if args.auth_token.is_some() && !websocket_url_supports_auth_token(&url) {
+            return Err(IoError::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "remote auth tokens require `wss://` or loopback `ws://` URLs; got `{websocket_url}`"
+                ),
+            ));
+        }
         let mut request = url.as_str().into_client_request().map_err(|err| {
             IoError::new(
                 ErrorKind::InvalidInput,
