@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::SkillLoadOutcome;
@@ -103,10 +104,11 @@ fn emit_skill_injected_metric(
 /// Collect explicitly mentioned skills from structured and text mentions.
 ///
 /// Structured `UserInput::Skill` selections are resolved first by path against
-/// enabled skills. Text inputs are then scanned to extract `$skill-name` tokens, and we
-/// iterate `skills` in their existing order to preserve prior ordering semantics.
-/// Explicit links are resolved by path and plain names are only used when the match
-/// is unambiguous.
+/// enabled skills. Text inputs are then scanned for linked resource paths,
+/// `$skill-name` tokens, and unadorned plain text names. We iterate `skills`
+/// in their existing order to preserve prior ordering semantics. Explicit
+/// links are resolved by path and plain names are only used when the match is
+/// unambiguous.
 ///
 /// Complexity: `O(T + (N_s + N_t) * S)` time, `O(S + M)` space, where:
 /// `S` = number of skills, `T` = total text length, `N_s` = number of structured skill inputs,
@@ -117,12 +119,12 @@ pub fn collect_explicit_skill_mentions(
     disabled_paths: &HashSet<AbsolutePathBuf>,
     connector_slug_counts: &HashMap<String, usize>,
 ) -> Vec<SkillMetadata> {
-    let skill_name_counts = build_skill_name_counts(skills, disabled_paths).0;
+    let plain_text_name_counts = build_plain_text_skill_name_counts(skills, disabled_paths);
 
     let selection_context = SkillSelectionContext {
         skills,
         disabled_paths,
-        skill_name_counts: &skill_name_counts,
+        plain_text_name_counts: &plain_text_name_counts,
         connector_slug_counts,
     };
     let mut selected: Vec<SkillMetadata> = Vec::new();
@@ -133,6 +135,9 @@ pub fn collect_explicit_skill_mentions(
     for input in inputs {
         if let UserInput::Skill { name, path } = input {
             blocked_plain_names.insert(name.clone());
+            if let Some(base_name) = plugin_skill_base_name_from_name(name) {
+                blocked_plain_names.insert(base_name.to_string());
+            }
             let Ok(path) = AbsolutePathBuf::relative_to_current_dir(path) else {
                 continue;
             };
@@ -164,6 +169,15 @@ pub fn collect_explicit_skill_mentions(
                 &mut seen_paths,
                 &mut selected,
             );
+            select_skills_from_plain_text(
+                &selection_context,
+                &blocked_plain_names,
+                &mentioned_names,
+                text,
+                &mut seen_names,
+                &mut seen_paths,
+                &mut selected,
+            );
         }
     }
 
@@ -173,7 +187,7 @@ pub fn collect_explicit_skill_mentions(
 struct SkillSelectionContext<'a> {
     skills: &'a [SkillMetadata],
     disabled_paths: &'a HashSet<AbsolutePathBuf>,
-    skill_name_counts: &'a HashMap<String, usize>,
+    plain_text_name_counts: &'a HashMap<String, usize>,
     connector_slug_counts: &'a HashMap<String, usize>,
 }
 
@@ -317,6 +331,24 @@ pub fn extract_tool_mentions_with_sigil(text: &str, sigil: char) -> ToolMentions
     }
 }
 
+pub fn text_mentions_plain_name(text: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+
+    for (start, _) in text.match_indices(name) {
+        let before = text[..start].chars().next_back();
+        let after = text[start + name.len()..].chars().next();
+        if before.is_none_or(|ch| !is_plain_text_name_char(ch))
+            && after.is_none_or(|ch| !is_plain_text_name_char(ch))
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
 /// Select mentioned skills while preserving the order of `skills`.
 fn select_skills_from_mentions(
     selection_context: &SkillSelectionContext<'_>,
@@ -375,7 +407,7 @@ fn select_skills_from_mentions(
         }
 
         let skill_count = selection_context
-            .skill_name_counts
+            .plain_text_name_counts
             .get(skill.name.as_str())
             .copied()
             .unwrap_or(0);
@@ -393,6 +425,126 @@ fn select_skills_from_mentions(
             selected.push(skill.clone());
         }
     }
+}
+
+fn select_skills_from_plain_text(
+    selection_context: &SkillSelectionContext<'_>,
+    blocked_plain_names: &HashSet<String>,
+    mentions: &ToolMentions<'_>,
+    text: &str,
+    seen_names: &mut HashSet<String>,
+    seen_paths: &mut HashSet<AbsolutePathBuf>,
+    selected: &mut Vec<SkillMetadata>,
+) {
+    for skill in selection_context.skills {
+        if selection_context
+            .disabled_paths
+            .contains(&skill.path_to_skills_md)
+            || seen_paths.contains(&skill.path_to_skills_md)
+        {
+            continue;
+        }
+
+        let Some(matched_name) = plain_text_skill_match_name(text, skill) else {
+            continue;
+        };
+        if blocked_plain_names.contains(matched_name) || mentions.names.contains(matched_name) {
+            continue;
+        }
+
+        let skill_count = selection_context
+            .plain_text_name_counts
+            .get(matched_name)
+            .copied()
+            .unwrap_or(0);
+        let connector_count = selection_context
+            .connector_slug_counts
+            .get(&matched_name.to_ascii_lowercase())
+            .copied()
+            .unwrap_or(0);
+        if skill_count != 1 || connector_count != 0 {
+            continue;
+        }
+
+        if seen_names.insert(skill.name.clone()) {
+            seen_paths.insert(skill.path_to_skills_md.clone());
+            selected.push(skill.clone());
+        }
+    }
+}
+
+fn build_plain_text_skill_name_counts(
+    skills: &[SkillMetadata],
+    disabled_paths: &HashSet<AbsolutePathBuf>,
+) -> HashMap<String, usize> {
+    let mut counts = build_skill_name_counts(skills, disabled_paths).0;
+    for skill in skills {
+        if disabled_paths.contains(&skill.path_to_skills_md) {
+            continue;
+        }
+        if let Some(base_name) = plugin_skill_base_name(skill) {
+            *counts.entry(base_name.to_string()).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+fn plain_text_skill_match_name<'a>(text: &str, skill: &'a SkillMetadata) -> Option<&'a str> {
+    if text_mentions_plain_name(text, skill.name.as_str()) {
+        return Some(skill.name.as_str());
+    }
+
+    let base_name = plugin_skill_base_name(skill)?;
+    text_mentions_plain_name(text, base_name).then_some(base_name)
+}
+
+fn plugin_skill_base_name(skill: &SkillMetadata) -> Option<&str> {
+    let (prefix, _) = skill.name.split_once(':')?;
+    let namespace = plugin_namespace_for_local_skill_path(skill.path_to_skills_md.as_path())?;
+    (namespace == prefix)
+        .then(|| plugin_skill_base_name_from_name(skill.name.as_str()))
+        .flatten()
+}
+
+fn plugin_skill_base_name_from_name(name: &str) -> Option<&str> {
+    name.split_once(':').map(|(_, base_name)| base_name)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawPluginManifestName {
+    #[serde(default)]
+    name: String,
+}
+
+fn plugin_namespace_for_local_skill_path(path: &Path) -> Option<String> {
+    for ancestor in path.ancestors() {
+        let namespace = plugin_manifest_name_from_local_root(ancestor);
+        if namespace.is_some() {
+            return namespace;
+        }
+    }
+    None
+}
+
+fn plugin_manifest_name_from_local_root(plugin_root: &Path) -> Option<String> {
+    for relative_path in [".codex-plugin/plugin.json", ".claude-plugin/plugin.json"] {
+        let manifest_path = plugin_root.join(relative_path);
+        if !manifest_path.is_file() {
+            continue;
+        }
+        let contents = std::fs::read_to_string(&manifest_path).ok()?;
+        let RawPluginManifestName { name: raw_name } = serde_json::from_str(&contents).ok()?;
+        return Some(
+            plugin_root
+                .file_name()
+                .and_then(|entry| entry.to_str())
+                .filter(|_| raw_name.trim().is_empty())
+                .unwrap_or(raw_name.as_str())
+                .to_string(),
+        );
+    }
+    None
 }
 
 fn parse_linked_tool_mention<'a>(
@@ -504,6 +656,10 @@ fn text_mentions_skill(text: &str, skill_name: &str) -> bool {
 
 fn is_mention_name_char(byte: u8) -> bool {
     matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'-' | b':')
+}
+
+fn is_plain_text_name_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | ':' | '@' | '/' | '\\')
 }
 
 #[cfg(test)]

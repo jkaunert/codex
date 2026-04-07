@@ -9,6 +9,7 @@ use super::ContextualUserFragment;
 pub(crate) struct AvailableSkillsInstructions {
     skill_root_lines: Vec<String>,
     skill_lines: Vec<String>,
+    explicit_only_skill_lines: Vec<String>,
 }
 
 impl From<AvailableSkills> for AvailableSkillsInstructions {
@@ -16,6 +17,7 @@ impl From<AvailableSkills> for AvailableSkillsInstructions {
         Self {
             skill_root_lines: available_skills.skill_root_lines,
             skill_lines: available_skills.skill_lines,
+            explicit_only_skill_lines: available_skills.explicit_only_skill_lines,
         }
     }
 }
@@ -26,6 +28,10 @@ impl ContextualUserFragment for AvailableSkillsInstructions {
     const END_MARKER: &'static str = SKILLS_INSTRUCTIONS_CLOSE_TAG;
 
     fn body(&self) -> String {
-        render_available_skills_body(&self.skill_root_lines, &self.skill_lines)
+        render_available_skills_body(
+            &self.skill_root_lines,
+            &self.skill_lines,
+            &self.explicit_only_skill_lines,
+        )
     }
 }

@@ -5,6 +5,8 @@ use codex_utils_absolute_path::test_support::test_path_buf;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fs;
+use tempfile::TempDir;
 
 fn make_skill(name: &str, path: &str) -> SkillMetadata {
     SkillMetadata {
@@ -15,6 +17,41 @@ fn make_skill(name: &str, path: &str) -> SkillMetadata {
         dependencies: None,
         policy: None,
         path_to_skills_md: test_path_buf(path).abs(),
+        scope: codex_protocol::protocol::SkillScope::User,
+    }
+}
+
+fn make_plugin_skill(
+    tempdir: &TempDir,
+    plugin_name: &str,
+    skill_dir_name: &str,
+    base_name: &str,
+) -> SkillMetadata {
+    let skill_path = tempdir
+        .path()
+        .join(plugin_name)
+        .join(".codex-plugin")
+        .join("plugin.json");
+    fs::create_dir_all(skill_path.parent().expect("plugin manifest parent")).expect("mkdirs");
+    fs::write(&skill_path, format!(r#"{{"name":"{plugin_name}"}}"#)).expect("write manifest");
+
+    let skill_md = tempdir
+        .path()
+        .join(plugin_name)
+        .join("skills")
+        .join(skill_dir_name)
+        .join("SKILL.md");
+    fs::create_dir_all(skill_md.parent().expect("skill parent")).expect("mkdirs");
+    fs::write(&skill_md, "---\ndescription: plugin skill\n---\n").expect("write skill");
+
+    SkillMetadata {
+        name: format!("{plugin_name}:{base_name}"),
+        description: format!("{base_name} skill"),
+        short_description: None,
+        interface: None,
+        dependencies: None,
+        policy: None,
+        path_to_skills_md: skill_md.abs(),
         scope: codex_protocol::protocol::SkillScope::User,
     }
 }
@@ -84,6 +121,33 @@ fn text_mentions_skill_handles_many_dollars_without_looping() {
 }
 
 #[test]
+fn text_mentions_plain_name_requires_exact_boundary() {
+    assert_eq!(
+        true,
+        text_mentions_plain_name(
+            "use apple-app-orchestrator please",
+            "apple-app-orchestrator"
+        )
+    );
+    assert_eq!(
+        true,
+        text_mentions_plain_name("(apple-app-orchestrator)", "apple-app-orchestrator")
+    );
+    assert_eq!(
+        true,
+        text_mentions_plain_name("apple-app-orchestrator.", "apple-app-orchestrator")
+    );
+    assert_eq!(
+        false,
+        text_mentions_plain_name("apple-app-orchestrators", "apple-app-orchestrator")
+    );
+    assert_eq!(
+        false,
+        text_mentions_plain_name("apple-app-orchestrator_extra", "apple-app-orchestrator")
+    );
+}
+
+#[test]
 fn extract_tool_mentions_handles_plain_and_linked_mentions() {
     assert_mentions(
         "use $alpha and [$beta](/tmp/beta)",
@@ -144,6 +208,69 @@ fn collect_explicit_skill_mentions_text_respects_skill_order() {
 
     // Text scanning should not change the previous selection ordering semantics.
     assert_eq!(selected, vec![beta, alpha]);
+}
+
+#[test]
+fn collect_explicit_skill_mentions_from_plain_text_name() {
+    let alpha = make_skill("alpha-skill", "/tmp/alpha");
+    let skills = vec![alpha.clone()];
+    let inputs = vec![UserInput::Text {
+        text: "please use alpha-skill".to_string(),
+        text_elements: Vec::new(),
+    }];
+    let connector_counts = HashMap::new();
+
+    let selected = collect_mentions(&inputs, &skills, &HashSet::new(), &connector_counts);
+
+    assert_eq!(selected, vec![alpha]);
+}
+
+#[test]
+fn collect_explicit_skill_mentions_from_plain_text_plugin_skill_base_name() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let alpha = make_plugin_skill(
+        &tempdir,
+        "sample",
+        "apple-app-orchestrator",
+        "apple-app-orchestrator",
+    );
+    let skills = vec![alpha.clone()];
+    let inputs = vec![UserInput::Text {
+        text: "use apple-app-orchestrator for this workflow".to_string(),
+        text_elements: Vec::new(),
+    }];
+    let connector_counts = HashMap::new();
+
+    let selected = collect_mentions(&inputs, &skills, &HashSet::new(), &connector_counts);
+
+    assert_eq!(selected, vec![alpha]);
+}
+
+#[test]
+fn collect_explicit_skill_mentions_skips_ambiguous_plain_text_plugin_skill_base_name() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let alpha = make_plugin_skill(
+        &tempdir,
+        "sample",
+        "apple-app-orchestrator",
+        "apple-app-orchestrator",
+    );
+    let beta = make_plugin_skill(
+        &tempdir,
+        "other",
+        "apple-app-orchestrator",
+        "apple-app-orchestrator",
+    );
+    let skills = vec![alpha, beta];
+    let inputs = vec![UserInput::Text {
+        text: "use apple-app-orchestrator for this workflow".to_string(),
+        text_elements: Vec::new(),
+    }];
+    let connector_counts = HashMap::new();
+
+    let selected = collect_mentions(&inputs, &skills, &HashSet::new(), &connector_counts);
+
+    assert_eq!(selected, Vec::new());
 }
 
 #[test]

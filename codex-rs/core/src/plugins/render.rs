@@ -20,10 +20,13 @@ pub(crate) fn render_explicit_plugin_instructions(
     )];
 
     if plugin.has_skills {
-        lines.push(format!(
-            "- Skills from this plugin are prefixed with `{}:`.",
-            plugin.display_name
-        ));
+        if let Some(namespace) = plugin_skill_namespace(plugin) {
+            lines.push(format!(
+                "- Skills from this plugin are prefixed with `{namespace}:` in the Skills list."
+            ));
+        } else {
+            lines.push("- Skills from this plugin are available in the Skills list.".to_string());
+        }
     }
 
     if !available_mcp_servers.is_empty() {
@@ -55,6 +58,13 @@ pub(crate) fn render_explicit_plugin_instructions(
     lines.push("Use these plugin-associated capabilities to help solve the task.".to_string());
 
     Some(lines.join("\n"))
+}
+
+fn plugin_skill_namespace(plugin: &PluginCapabilitySummary) -> Option<&str> {
+    plugin.config_name.split_once('@').map_or_else(
+        || (!plugin.config_name.is_empty()).then_some(plugin.config_name.as_str()),
+        |(plugin_name, _)| (!plugin_name.is_empty()).then_some(plugin_name),
+    )
 }
 
 #[cfg(test)]

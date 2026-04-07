@@ -23,8 +23,10 @@ pub const SKILL_DESCRIPTIONS_REMOVED_WARNING_PREFIX: &str =
     "Warning: Exceeded skills context budget. All skill descriptions were removed and";
 pub const SKILLS_INTRO_WITH_ABSOLUTE_PATHS: &str = "A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and file path so you can open the source for full instructions when using a specific skill.";
 pub const SKILLS_INTRO_WITH_ALIASES: &str = "A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and a short path that can be expanded into an absolute path using the skill roots table.";
-pub const SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS: &str = r###"- Discovery: The list above is the skills available in this session (name + description + file path). Skill bodies live on disk at the listed paths.
-- Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
+pub const EXPLICIT_ONLY_SKILLS_INTRO: &str = "These skills are available in this session but are not eligible for automatic task matching. Use them only when the user names them explicitly, selects them directly, or another active skill/instruction explicitly routes through them.";
+pub const SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS: &str = r###"- Discovery: The lists above are the skills available in this session (name + description + file path). Skill bodies live on disk at the listed paths.
+- Trigger rules for available skills: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
+- Trigger rules for explicit-only skills: Use them only when the user names them directly, selects them through a structured skill mention, or another active skill/instruction explicitly tells you to route through them.
 - Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.
 - How to use a skill (progressive disclosure):
   1) After deciding to use a skill, open its `SKILL.md`. Read only enough to follow the workflow.
@@ -40,8 +42,9 @@ pub const SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS: &str = r###"- Discovery: The li
   - Avoid deep reference-chasing: prefer opening only files directly linked from `SKILL.md` unless you're blocked.
   - When variants exist (frameworks, providers, domains), pick only the relevant reference file(s) and note that choice.
 - Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue."###;
-pub const SKILLS_HOW_TO_USE_WITH_ALIASES: &str = r###"- Discovery: The list above is the skills available in this session (name + description + short path). Skill bodies live on disk at the listed paths after expanding the matching alias from `### Skill roots`.
-- Trigger rules: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
+pub const SKILLS_HOW_TO_USE_WITH_ALIASES: &str = r###"- Discovery: The lists above are the skills available in this session (name + description + short path). Skill bodies live on disk at the listed paths after expanding the matching alias from `### Skill roots`.
+- Trigger rules for available skills: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
+- Trigger rules for explicit-only skills: Use them only when the user names them directly, selects them through a structured skill mention, or another active skill/instruction explicitly tells you to route through them.
 - Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.
 - How to use a skill (progressive disclosure):
   1) After deciding to use a skill, expand the listed short `path` with the matching alias from `### Skill roots`, then open its `SKILL.md`. Read only enough to follow the workflow.
@@ -58,7 +61,11 @@ pub const SKILLS_HOW_TO_USE_WITH_ALIASES: &str = r###"- Discovery: The list abov
   - When variants exist (frameworks, providers, domains), pick only the relevant reference file(s) and note that choice.
 - Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue."###;
 
-pub fn render_available_skills_body(skill_root_lines: &[String], skill_lines: &[String]) -> String {
+pub fn render_available_skills_body(
+    skill_root_lines: &[String],
+    skill_lines: &[String],
+    explicit_only_skill_lines: &[String],
+) -> String {
     let mut lines: Vec<String> = Vec::new();
     lines.push("## Skills".to_string());
     if skill_root_lines.is_empty() {
@@ -68,8 +75,15 @@ pub fn render_available_skills_body(skill_root_lines: &[String], skill_lines: &[
         lines.push("### Skill roots".to_string());
         lines.extend(skill_root_lines.iter().cloned());
     }
-    lines.push("### Available skills".to_string());
-    lines.extend(skill_lines.iter().cloned());
+    if !skill_lines.is_empty() {
+        lines.push("### Available skills".to_string());
+        lines.extend(skill_lines.iter().cloned());
+    }
+    if !explicit_only_skill_lines.is_empty() {
+        lines.push("### Explicit-only skills".to_string());
+        lines.push(EXPLICIT_ONLY_SKILLS_INTRO.to_string());
+        lines.extend(explicit_only_skill_lines.iter().cloned());
+    }
 
     lines.push("### How to use skills".to_string());
     let how_to_use = if skill_root_lines.is_empty() {
@@ -135,6 +149,7 @@ pub enum SkillRenderSideEffects<'a> {
 pub struct AvailableSkills {
     pub skill_root_lines: Vec<String>,
     pub skill_lines: Vec<String>,
+    pub explicit_only_skill_lines: Vec<String>,
     pub report: SkillRenderReport,
     pub warning_message: Option<String>,
 }
@@ -161,8 +176,9 @@ pub fn build_available_skills(
     budget: SkillMetadataBudget,
     side_effects: SkillRenderSideEffects<'_>,
 ) -> Option<AvailableSkills> {
-    let skills = outcome.allowed_skills_for_implicit_invocation();
-    if skills.is_empty() {
+    let implicit_skills = outcome.allowed_skills_for_implicit_invocation();
+    let explicit_only_skills = outcome.enabled_skills_for_explicit_invocation_only();
+    if implicit_skills.is_empty() && explicit_only_skills.is_empty() {
         record_skill_render_side_effects(
             side_effects,
             /*total_count*/ 0,
@@ -173,7 +189,10 @@ pub fn build_available_skills(
         return None;
     }
 
-    let absolute_lines = ordered_absolute_skill_lines(&skills);
+    let mut skills = implicit_skills.clone();
+    skills.extend(explicit_only_skills.clone());
+    let absolute_lines =
+        ordered_absolute_skill_lines_for_sections(&implicit_skills, &explicit_only_skills);
     let absolute = build_available_skills_from_lines(
         absolute_lines,
         skills.len(),
@@ -184,7 +203,9 @@ pub fn build_available_skills(
     let selected =
         if absolute.report.omitted_count == 0 && absolute.report.truncated_description_chars == 0 {
             absolute
-        } else if let Some(aliased) = build_aliased_available_skills(outcome, &skills, budget) {
+        } else if let Some(aliased) =
+            build_aliased_available_skills(outcome, &implicit_skills, &explicit_only_skills, budget)
+        {
             if aliased_render_is_better(&aliased, &absolute, budget) {
                 aliased
             } else {
@@ -208,7 +229,15 @@ fn build_available_skills_from_lines(
         return None;
     }
 
-    let (skill_lines, report) = render_skill_lines_from_lines(skill_lines, total_count, budget);
+    let (rendered_lines, report) = render_skill_lines_from_lines(skill_lines, total_count, budget);
+    let mut skill_lines = Vec::new();
+    let mut explicit_only_skill_lines = Vec::new();
+    for rendered in rendered_lines {
+        match rendered.section {
+            SkillLineSection::Available => skill_lines.push(rendered.line),
+            SkillLineSection::ExplicitOnly => explicit_only_skill_lines.push(rendered.line),
+        }
+    }
     let warning_message = if report.omitted_count > 0 {
         let skill_word = if report.omitted_count == 1 {
             "skill"
@@ -241,6 +270,7 @@ fn build_available_skills_from_lines(
     let available = AvailableSkills {
         skill_root_lines: path_aliases.skill_root_lines,
         skill_lines,
+        explicit_only_skill_lines,
         report,
         warning_message,
     };
@@ -322,14 +352,18 @@ fn render_skill_lines_from_lines(
     skill_lines: Vec<SkillLine<'_>>,
     total_count: usize,
     budget: SkillMetadataBudget,
-) -> (Vec<String>, SkillRenderReport) {
+) -> (Vec<RenderedSkillLine>, SkillRenderReport) {
     let full_cost = skill_lines.iter().fold(0usize, |used, line| {
         used.saturating_add(line.full_cost(budget))
     });
     if full_cost <= budget.limit() {
         let included = skill_lines
             .iter()
-            .map(SkillLine::render_full)
+            .map(|line| RenderedSkillLine {
+                line: line.render_full(),
+                truncated_chars: 0,
+                section: line.section,
+            })
             .collect::<Vec<_>>();
 
         return (
@@ -357,7 +391,6 @@ fn render_skill_lines_from_lines(
             sum_description_truncation(&rendered);
         let included = rendered
             .into_iter()
-            .map(|rendered| rendered.line)
             .collect::<Vec<_>>();
 
         return (
@@ -379,7 +412,7 @@ fn render_minimum_skill_lines_until_budget(
     budget: SkillMetadataBudget,
     skill_lines: Vec<SkillLine<'_>>,
     total_count: usize,
-) -> (Vec<String>, SkillRenderReport) {
+) -> (Vec<RenderedSkillLine>, SkillRenderReport) {
     let mut included = Vec::new();
     let mut used = 0usize;
     let mut omitted_count = 0usize;
@@ -390,7 +423,11 @@ fn render_minimum_skill_lines_until_budget(
         let description_char_count = line.description_char_count();
         if used.saturating_add(line_cost) <= budget.limit() {
             used = used.saturating_add(line_cost);
-            included.push(line.render_minimum());
+            included.push(RenderedSkillLine {
+                line: line.render_minimum(),
+                truncated_chars: description_char_count,
+                section: line.section,
+            });
         } else {
             omitted_count = omitted_count.saturating_add(1);
         }
@@ -445,11 +482,19 @@ struct SkillLine<'a> {
     name: &'a str,
     description: &'a str,
     path: String,
+    section: SkillLineSection,
 }
 
 struct RenderedSkillLine {
     line: String,
     truncated_chars: usize,
+    section: SkillLineSection,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SkillLineSection {
+    Available,
+    ExplicitOnly,
 }
 
 struct DescriptionBudgetLine<'a> {
@@ -481,11 +526,28 @@ impl<'a> SkillLine<'a> {
         )
     }
 
+    fn explicit_only(skill: &'a SkillMetadata) -> Self {
+        Self::with_path_and_section(
+            skill,
+            skill.path_to_skills_md.to_string_lossy().replace('\\', "/"),
+            SkillLineSection::ExplicitOnly,
+        )
+    }
+
     fn with_path(skill: &'a SkillMetadata, path: String) -> Self {
+        Self::with_path_and_section(skill, path, SkillLineSection::Available)
+    }
+
+    fn with_path_and_section(
+        skill: &'a SkillMetadata,
+        path: String,
+        section: SkillLineSection,
+    ) -> Self {
         Self {
             name: skill.name.as_str(),
             description: skill.description.as_str(),
             path,
+            section,
         }
     }
 
@@ -627,6 +689,7 @@ fn render_lines_with_description_budget(
             RenderedSkillLine {
                 line: line.line.render_with_description_chars(description_chars),
                 truncated_chars,
+                section: line.line.section,
             }
         })
         .collect()
@@ -634,10 +697,13 @@ fn render_lines_with_description_budget(
 
 fn build_aliased_available_skills(
     outcome: &SkillLoadOutcome,
-    skills: &[SkillMetadata],
+    implicit_skills: &[SkillMetadata],
+    explicit_only_skills: &[SkillMetadata],
     budget: SkillMetadataBudget,
 ) -> Option<AvailableSkills> {
-    let plan = build_alias_plan(outcome, skills, budget)?;
+    let mut skills = implicit_skills.to_vec();
+    skills.extend_from_slice(explicit_only_skills);
+    let plan = build_alias_plan(outcome, &skills, budget)?;
     if plan.table_cost >= budget.limit() {
         return None;
     }
@@ -647,11 +713,8 @@ fn build_aliased_available_skills(
         SkillMetadataBudget::Tokens(_) => SkillMetadataBudget::Tokens(adjusted_limit),
         SkillMetadataBudget::Characters(_) => SkillMetadataBudget::Characters(adjusted_limit),
     };
-    let ordered_skills = ordered_skills_for_budget(skills);
-    let skill_lines = ordered_skills
-        .into_iter()
-        .map(|skill| SkillLine::with_path(skill, render_skill_path_with_aliases(skill, &plan)))
-        .collect::<Vec<_>>();
+    let skill_lines =
+        ordered_aliased_skill_lines_for_sections(implicit_skills, explicit_only_skills, &plan);
     build_available_skills_from_lines(skill_lines, skills.len(), adjusted_budget, plan.aliases)
 }
 
@@ -783,8 +846,9 @@ fn aliased_metadata_overhead_cost(
     skill_root_lines: &[String],
 ) -> usize {
     let empty_skill_lines: &[String] = &[];
-    let absolute_body = render_available_skills_body(&[], empty_skill_lines);
-    let aliased_body = render_available_skills_body(skill_root_lines, empty_skill_lines);
+    let absolute_body = render_available_skills_body(&[], empty_skill_lines, empty_skill_lines);
+    let aliased_body =
+        render_available_skills_body(skill_root_lines, empty_skill_lines, empty_skill_lines);
     budget
         .cost(&aliased_body)
         .saturating_sub(budget.cost(&absolute_body))
@@ -869,7 +933,9 @@ fn available_skills_cost(budget: SkillMetadataBudget, available: &AvailableSkill
     } else {
         aliased_metadata_overhead_cost(budget, &available.skill_root_lines)
     };
-    metadata_cost.saturating_add(lines_cost(budget, &available.skill_lines))
+    metadata_cost
+        .saturating_add(lines_cost(budget, &available.skill_lines))
+        .saturating_add(lines_cost(budget, &available.explicit_only_skill_lines))
 }
 
 fn ordered_absolute_skill_lines(skills: &[SkillMetadata]) -> Vec<SkillLine<'_>> {
@@ -877,6 +943,49 @@ fn ordered_absolute_skill_lines(skills: &[SkillMetadata]) -> Vec<SkillLine<'_>> 
         .into_iter()
         .map(SkillLine::new)
         .collect()
+}
+
+fn ordered_absolute_skill_lines_for_sections<'a>(
+    implicit_skills: &'a [SkillMetadata],
+    explicit_only_skills: &'a [SkillMetadata],
+) -> Vec<SkillLine<'a>> {
+    let mut lines = ordered_skills_for_budget(implicit_skills)
+        .into_iter()
+        .map(SkillLine::new)
+        .collect::<Vec<_>>();
+    lines.extend(
+        ordered_skills_for_budget(explicit_only_skills)
+            .into_iter()
+            .map(SkillLine::explicit_only),
+    );
+    lines
+}
+
+fn ordered_aliased_skill_lines_for_sections<'a>(
+    implicit_skills: &'a [SkillMetadata],
+    explicit_only_skills: &'a [SkillMetadata],
+    plan: &AliasPlan,
+) -> Vec<SkillLine<'a>> {
+    let mut lines = ordered_skills_for_budget(implicit_skills)
+        .into_iter()
+        .map(|skill| {
+            SkillLine::with_path_and_section(
+                skill,
+                render_skill_path_with_aliases(skill, plan),
+                SkillLineSection::Available,
+            )
+        })
+        .collect::<Vec<_>>();
+    lines.extend(ordered_skills_for_budget(explicit_only_skills).into_iter().map(
+        |skill| {
+            SkillLine::with_path_and_section(
+                skill,
+                render_skill_path_with_aliases(skill, plan),
+                SkillLineSection::ExplicitOnly,
+            )
+        },
+    ));
+    lines
 }
 
 fn ordered_skills_for_budget(skills: &[SkillMetadata]) -> Vec<&SkillMetadata> {
@@ -929,6 +1038,15 @@ mod tests {
     ) -> SkillMetadata {
         let mut skill = make_skill(name, scope);
         skill.description = description.to_string();
+        skill
+    }
+
+    fn make_explicit_only_skill(name: &str, scope: SkillScope) -> SkillMetadata {
+        let mut skill = make_skill(name, scope);
+        skill.policy = Some(crate::SkillPolicy {
+            allow_implicit_invocation: Some(false),
+            products: Vec::new(),
+        });
         skill
     }
 
@@ -1179,6 +1297,38 @@ mod tests {
     }
 
     #[test]
+    fn outcome_rendering_keeps_explicit_only_skills_in_separate_section_after_sorting() {
+        let available = make_skill("zeta-skill", SkillScope::User);
+        let explicit_only = make_explicit_only_skill("alpha-explicit-only", SkillScope::User);
+        let outcome = outcome_with_roots(vec![available.clone(), explicit_only.clone()], vec![]);
+
+        let rendered = build_available_skills(
+            &outcome,
+            SkillMetadataBudget::Characters(usize::MAX),
+            SkillRenderSideEffects::None,
+        )
+        .expect("skills should render");
+
+        assert_eq!(
+            rendered.skill_lines,
+            vec![expected_skill_line(&available, "desc")]
+        );
+        assert_eq!(
+            rendered.explicit_only_skill_lines,
+            vec![expected_skill_line(&explicit_only, "desc")]
+        );
+
+        let body = render_available_skills_body(
+            &rendered.skill_root_lines,
+            &rendered.skill_lines,
+            &rendered.explicit_only_skill_lines,
+        );
+        assert!(body.contains("### Available skills\n- zeta-skill:"));
+        assert!(body.contains("### Explicit-only skills\n"));
+        assert!(body.contains("- alpha-explicit-only:"));
+    }
+
+    #[test]
     fn outcome_rendering_uses_aliases_when_they_allow_more_skills_to_fit() {
         let root = test_path_buf(
             "/Users/xl/.codex/plugins/cache/openai-curated/example/hash1234567890/skills-with-a-very-long-shared-prefix",
@@ -1325,9 +1475,11 @@ mod tests {
             SkillLine::with_path(&alpha, render_skill_path_with_aliases(&alpha, &plan))
                 .render_minimum()
         ));
+        let skills = vec![alpha, beta];
         let rendered = build_aliased_available_skills(
             &outcome,
-            &[alpha, beta],
+            &skills,
+            &[],
             SkillMetadataBudget::Characters(plan.table_cost + alpha_cost),
         )
         .expect("skills should render");
