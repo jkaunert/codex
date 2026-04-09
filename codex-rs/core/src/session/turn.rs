@@ -1101,6 +1101,12 @@ async fn run_sampling_request(
         };
 
         if let Some(progress) = stream_progress.as_ref() {
+            if progress.has_no_substantive_progress()
+                && let Some(partial_item) = progress.partial_assistant_retry_item()
+            {
+                sess.record_conversation_items(&turn_context, std::slice::from_ref(&partial_item))
+                    .await;
+            }
             if progress.has_no_substantive_progress() {
                 consecutive_no_progress_retries += 1;
                 if consecutive_no_progress_retries >= NO_PROGRESS_RETRY_LOOP_THRESHOLD {
@@ -1333,19 +1339,33 @@ struct SamplingAttemptProgress {
     tool_future_count: usize,
     substantive_kinds: Vec<&'static str>,
     last_agent_message: Option<String>,
+    partial_assistant_phase: Option<MessagePhase>,
+    partial_assistant_text: String,
 }
 
 impl SamplingAttemptProgress {
+    fn note_output_item_added(&mut self, item: &ResponseItem) {
+        if let ResponseItem::Message { role, phase, .. } = item
+            && role == "assistant"
+        {
+            self.partial_assistant_phase = phase.clone();
+        }
+    }
+
     fn note_output_item_done(&mut self, item: &ResponseItem) {
         match item {
             ResponseItem::Message { role, phase, .. }
                 if role == "assistant" && matches!(phase, Some(MessagePhase::Commentary)) =>
             {
                 self.commentary_message_count += 1;
+                self.partial_assistant_phase = None;
+                self.partial_assistant_text.clear();
             }
             ResponseItem::Message { role, .. } if role == "assistant" => {
                 self.substantive_output_count += 1;
                 self.substantive_kinds.push("assistant_message");
+                self.partial_assistant_phase = None;
+                self.partial_assistant_text.clear();
             }
             ResponseItem::Reasoning { .. } => {}
             ResponseItem::LocalShellCall { .. } => self.note_substantive_kind("local_shell_call"),
@@ -1370,6 +1390,14 @@ impl SamplingAttemptProgress {
         }
     }
 
+    fn note_streamed_assistant_text(&mut self, visible_text: &str) {
+        if visible_text.is_empty() {
+            return;
+        }
+        self.partial_assistant_text.push_str(visible_text);
+        self.last_agent_message = Some(self.partial_assistant_text.clone());
+    }
+
     fn note_tool_future(&mut self) {
         self.tool_future_count += 1;
     }
@@ -1381,6 +1409,21 @@ impl SamplingAttemptProgress {
 
     fn has_no_substantive_progress(&self) -> bool {
         self.substantive_output_count == 0 && self.tool_future_count == 0
+    }
+
+    fn partial_assistant_retry_item(&self) -> Option<ResponseItem> {
+        if self.partial_assistant_text.trim().is_empty() {
+            return None;
+        }
+        Some(ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: self.partial_assistant_text.clone(),
+            }],
+            end_turn: None,
+            phase: self.partial_assistant_phase.clone(),
+        })
     }
 }
 
@@ -2215,6 +2258,7 @@ async fn try_run_sampling_request(
                 }
             }
             ResponseEvent::OutputItemAdded(item) => {
+                attempt_progress.note_output_item_added(&item);
                 if let ResponseItem::CustomToolCall { call_id, name, .. } = &item {
                     let tool_name = ToolName::plain(name.as_str());
                     active_tool_argument_diff_consumer = tool_runtime
@@ -2240,6 +2284,7 @@ async fn try_run_sampling_request(
                         let item_id = turn_item.id();
                         let mut seeded =
                             assistant_message_stream_parsers.seed_item_text(&item_id, &raw_text);
+                        attempt_progress.note_streamed_assistant_text(&seeded.visible_text);
                         if let TurnItem::AgentMessage(agent_message) = &mut turn_item {
                             agent_message.content =
                                 vec![codex_protocol::items::AgentMessageContent::Text {
@@ -2344,6 +2389,7 @@ async fn try_run_sampling_request(
                     let item_id = active.id();
                     if matches!(active, TurnItem::AgentMessage(_)) {
                         let parsed = assistant_message_stream_parsers.parse_delta(&item_id, &delta);
+                        attempt_progress.note_streamed_assistant_text(&parsed.visible_text);
                         emit_streamed_assistant_text_delta(
                             &sess,
                             &turn_context,

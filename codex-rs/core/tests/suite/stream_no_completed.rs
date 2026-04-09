@@ -258,6 +258,211 @@ async fn retries_when_stream_idles_after_commentary_before_completed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retries_rebuild_prompt_from_history_after_commentary_only_interruption() {
+    skip_if_no_network!();
+
+    let first_attempt = vec![
+        chunk(ev_response_created("resp-commentary")),
+        chunk(ev_message_item_added("msg-1", "")),
+        chunk(ev_output_text_delta("Routing: orchestrator-led")),
+        chunk(ev_commentary_message_item_done(
+            "msg-1",
+            "Routing: orchestrator-led",
+        )),
+    ];
+
+    let second_attempt = vec![
+        chunk(ev_response_created("resp-final")),
+        chunk(ev_message_item_added("msg-2", "")),
+        chunk(ev_output_text_delta("final after retry")),
+        chunk(ev_message_item_done("msg-2", "final after retry")),
+        chunk(ev_completed("resp-final")),
+    ];
+
+    let (server, _) = start_streaming_sse_server(vec![first_attempt, second_attempt]).await;
+
+    let model_provider = ModelProviderInfo {
+        name: "openai".into(),
+        base_url: Some(format!("{}/v1", server.uri())),
+        env_key: Some("PATH".into()),
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        auth: None,
+        aws: None,
+        wire_api: WireApi::Responses,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: Some(0),
+        stream_max_retries: Some(1),
+        stream_idle_timeout_ms: Some(50),
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+    };
+
+    let TestCodex { codex, .. } = test_codex()
+        .with_config(move |config| {
+            config.model_provider = model_provider;
+        })
+        .build_with_streaming_server(&server)
+        .await
+        .unwrap();
+
+    codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+        })
+        .await
+        .unwrap();
+
+    wait_for_event(
+        &codex,
+        |event| matches!(event, EventMsg::AgentMessage(message) if message.message == "final after retry"),
+    )
+    .await;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    let requests = server.requests().await;
+    assert_eq!(
+        requests.len(),
+        2,
+        "expected one retry after commentary interruption"
+    );
+
+    let retry_body: Value =
+        serde_json::from_slice(&requests[1]).expect("retry request body should be valid JSON");
+    let retry_input = retry_body["input"].as_array().expect("retry input array");
+    let commentary_item = retry_input
+        .iter()
+        .find(|item| {
+            item.get("role").and_then(|role| role.as_str()) == Some("assistant")
+                && item.get("phase").and_then(|phase| phase.as_str()) == Some("commentary")
+                && item
+                    .get("content")
+                    .and_then(|content| content.as_array())
+                    .and_then(|content| content.first())
+                    .and_then(|entry| entry.get("text"))
+                    .and_then(|text| text.as_str())
+                    == Some("Routing: orchestrator-led")
+        })
+        .expect(
+            "retry request should include persisted commentary item from the interrupted attempt",
+        );
+    assert_eq!(
+        commentary_item
+            .get("phase")
+            .and_then(|phase| phase.as_str()),
+        Some("commentary")
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retries_rebuild_prompt_from_history_after_commentary_delta_only_interruption() {
+    skip_if_no_network!();
+
+    let first_attempt = vec![
+        chunk(ev_response_created("resp-partial")),
+        chunk(ev_message_item_added("msg-1", "")),
+        chunk(ev_output_text_delta("Routing: orchestrator-led")),
+    ];
+
+    let second_attempt = vec![
+        chunk(ev_response_created("resp-final")),
+        chunk(ev_message_item_added("msg-2", "")),
+        chunk(ev_output_text_delta("final after retry")),
+        chunk(ev_message_item_done("msg-2", "final after retry")),
+        chunk(ev_completed("resp-final")),
+    ];
+
+    let (server, _) = start_streaming_sse_server(vec![first_attempt, second_attempt]).await;
+
+    let model_provider = ModelProviderInfo {
+        name: "openai".into(),
+        base_url: Some(format!("{}/v1", server.uri())),
+        env_key: Some("PATH".into()),
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        auth: None,
+        aws: None,
+        wire_api: WireApi::Responses,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: Some(0),
+        stream_max_retries: Some(1),
+        stream_idle_timeout_ms: Some(50),
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+    };
+
+    let TestCodex { codex, .. } = test_codex()
+        .with_config(move |config| {
+            config.model_provider = model_provider;
+        })
+        .build_with_streaming_server(&server)
+        .await
+        .unwrap();
+
+    codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+        })
+        .await
+        .unwrap();
+
+    wait_for_event(
+        &codex,
+        |event| matches!(event, EventMsg::AgentMessage(message) if message.message == "final after retry"),
+    )
+    .await;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    let requests = server.requests().await;
+    assert_eq!(
+        requests.len(),
+        2,
+        "expected one retry after commentary delta interruption"
+    );
+
+    let retry_body: Value =
+        serde_json::from_slice(&requests[1]).expect("retry request body should be valid JSON");
+    let retry_input = retry_body["input"].as_array().expect("retry input array");
+    retry_input
+        .iter()
+        .find(|item| {
+            item.get("role").and_then(|role| role.as_str()) == Some("assistant")
+                && item
+                    .get("content")
+                    .and_then(|content| content.as_array())
+                    .and_then(|content| content.first())
+                    .and_then(|entry| entry.get("text"))
+                    .and_then(|text| text.as_str())
+                    == Some("Routing: orchestrator-led")
+        })
+        .expect(
+            "retry request should include partial streamed commentary from the interrupted attempt",
+        );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fails_fast_after_repeated_commentary_only_retries_without_progress() {
     skip_if_no_network!();
 
