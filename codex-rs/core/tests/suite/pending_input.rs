@@ -422,6 +422,166 @@ async fn queued_inter_agent_mail_triggers_follow_up_after_commentary_message_ite
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tool_follow_up_triggers_follow_up_after_commentary_message_item() {
+    let (gate_commentary_tx, gate_commentary_rx) = oneshot::channel();
+    let (gate_stale_tx, gate_stale_rx) = oneshot::channel::<()>();
+
+    let first_chunks = vec![
+        chunk(ev_response_created("resp-1")),
+        chunk(ev_function_call(
+            "call-tool",
+            "shell",
+            r#"{"command":"echo tool output"}"#,
+        )),
+        gated_chunk(
+            gate_commentary_rx,
+            vec![
+                ev_message_item_added("msg-1", ""),
+                ev_output_text_delta("working"),
+                json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "message",
+                        "role": "assistant",
+                        "id": "msg-1",
+                        "content": [{"type": "output_text", "text": "working"}],
+                        "phase": "commentary",
+                    }
+                }),
+            ],
+        ),
+        gated_chunk(
+            gate_stale_rx,
+            vec![
+                ev_message_item_added("msg-stale", ""),
+                ev_output_text_delta("stale final"),
+                ev_message_item_done("msg-stale", "stale final"),
+                ev_completed("resp-1"),
+            ],
+        ),
+    ];
+
+    let second_chunks = vec![
+        chunk(ev_response_created("resp-2")),
+        chunk(ev_message_item_added("msg-2", "")),
+        chunk(ev_output_text_delta("final after tool")),
+        chunk(ev_message_item_done("msg-2", "final after tool")),
+        chunk(ev_completed("resp-2")),
+    ];
+
+    let (server, _completions) =
+        start_streaming_sse_server(vec![first_chunks, second_chunks]).await;
+
+    let codex = build_codex(&server).await;
+
+    submit_user_input(&codex, "first prompt").await;
+
+    let _ = gate_commentary_tx.send(());
+
+    tokio::time::timeout(tokio::time::Duration::from_secs(2), async {
+        loop {
+            if server.requests().await.len() == 2 {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("tool follow-up should trigger a second model request before response.completed");
+
+    drop(gate_stale_tx);
+
+    wait_for_agent_message(&codex, "final after tool").await;
+    wait_for_turn_complete(&codex).await;
+
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), 2);
+    let second_body: Value =
+        from_slice(&requests[1]).unwrap_or_else(|err| panic!("parse second request: {err}"));
+    assert!(
+        second_body["input"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| {
+                item.get("type").and_then(Value::as_str) == Some("function_call_output")
+                    && item.get("call_id").and_then(Value::as_str) == Some("call-tool")
+            })),
+        "second request should include function_call_output for the queued tool call"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tool_follow_up_triggers_follow_up_when_tool_output_arrives_before_response_completed() {
+    let (gate_completion_tx, gate_completion_rx) = oneshot::channel::<()>();
+
+    let first_chunks = vec![
+        chunk(ev_response_created("resp-1")),
+        chunk(ev_function_call(
+            "call-tool",
+            "shell",
+            r#"{"command":"echo tool output"}"#,
+        )),
+        gated_chunk(
+            gate_completion_rx,
+            vec![
+                ev_message_item_added("msg-stale", ""),
+                ev_output_text_delta("stale final"),
+                ev_message_item_done("msg-stale", "stale final"),
+                ev_completed("resp-1"),
+            ],
+        ),
+    ];
+
+    let second_chunks = vec![
+        chunk(ev_response_created("resp-2")),
+        chunk(ev_message_item_added("msg-2", "")),
+        chunk(ev_output_text_delta("final after tool")),
+        chunk(ev_message_item_done("msg-2", "final after tool")),
+        chunk(ev_completed("resp-2")),
+    ];
+
+    let (server, _completions) =
+        start_streaming_sse_server(vec![first_chunks, second_chunks]).await;
+
+    let codex = build_codex(&server).await;
+
+    submit_user_input(&codex, "first prompt").await;
+
+    tokio::time::timeout(tokio::time::Duration::from_secs(2), async {
+        loop {
+            if server.requests().await.len() == 2 {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("tool output should trigger a second model request before response.completed");
+
+    drop(gate_completion_tx);
+
+    wait_for_agent_message(&codex, "final after tool").await;
+    wait_for_turn_complete(&codex).await;
+
+    let requests = server.requests().await;
+    assert_eq!(requests.len(), 2);
+    let second_body: Value =
+        from_slice(&requests[1]).unwrap_or_else(|err| panic!("parse second request: {err}"));
+    assert!(
+        second_body["input"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| {
+                item.get("type").and_then(Value::as_str) == Some("function_call_output")
+                    && item.get("call_id").and_then(Value::as_str) == Some("call-tool")
+            })),
+        "second request should include function_call_output for the queued tool call"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn user_input_does_not_preempt_after_reasoning_item() {
     let (gate_reasoning_done_tx, gate_reasoning_done_rx) = oneshot::channel();
 

@@ -7608,23 +7608,71 @@ async fn try_run_sampling_request(
             from = field::Empty,
         );
 
-        let event = match stream
-            .next()
-            .instrument(trace_span!(parent: &handle_responses, "receiving"))
-            .or_cancel(&cancellation_token)
-            .await
-        {
-            Ok(event) => event,
-            Err(codex_async_utils::CancelErr::Cancelled) => break Err(CodexErr::TurnAborted),
-        };
+        let event = if in_flight.is_empty() {
+            let event = match stream
+                .next()
+                .instrument(trace_span!(parent: &handle_responses, "receiving"))
+                .or_cancel(&cancellation_token)
+                .await
+            {
+                Ok(event) => event,
+                Err(codex_async_utils::CancelErr::Cancelled) => break Err(CodexErr::TurnAborted),
+            };
 
-        let event = match event {
-            Some(res) => res?,
-            None => {
-                break Err(CodexErr::Stream(
-                    "stream closed before response.completed".into(),
-                    None,
-                ));
+            match event {
+                Some(res) => res?,
+                None => {
+                    break Err(CodexErr::Stream(
+                        "stream closed before response.completed".into(),
+                        None,
+                    ));
+                }
+            }
+        } else {
+            tokio::select! {
+                biased;
+                tool_result = in_flight.next() => {
+                    let Some(tool_result) = tool_result else {
+                        continue;
+                    };
+                    match tool_result {
+                        Ok(response_input) => {
+                            sess.record_conversation_items(&turn_context, &[response_input.into()])
+                                .await;
+                        }
+                        Err(err) => {
+                            error_or_panic(format!("in-flight tool future failed during receive: {err}"));
+                        }
+                    }
+                    if needs_follow_up {
+                        break Ok(SamplingRequestResult {
+                            needs_follow_up: true,
+                            last_agent_message,
+                        });
+                    }
+                    continue;
+                }
+                event = stream
+                    .next()
+                    .instrument(trace_span!(parent: &handle_responses, "receiving"))
+                    .or_cancel(&cancellation_token) => {
+                    let event = match event {
+                        Ok(event) => event,
+                        Err(codex_async_utils::CancelErr::Cancelled) => {
+                            break Err(CodexErr::TurnAborted)
+                        }
+                    };
+
+                    match event {
+                        Some(res) => res?,
+                        None => {
+                            break Err(CodexErr::Stream(
+                                "stream closed before response.completed".into(),
+                                None,
+                            ));
+                        }
+                    }
+                }
             }
         };
 
@@ -7700,12 +7748,14 @@ async fn try_run_sampling_request(
                     last_agent_message = Some(agent_message);
                 }
                 needs_follow_up |= output_result.needs_follow_up;
-                // todo: remove before stabilizing multi-agent v2
-                if preempt_for_mailbox_mail && sess.mailbox_rx.lock().await.has_pending() {
-                    break Ok(SamplingRequestResult {
-                        needs_follow_up: true,
-                        last_agent_message,
-                    });
+                if preempt_for_mailbox_mail {
+                    let mailbox_pending = sess.mailbox_rx.lock().await.has_pending();
+                    if needs_follow_up || mailbox_pending {
+                        break Ok(SamplingRequestResult {
+                            needs_follow_up: true,
+                            last_agent_message,
+                        });
+                    }
                 }
             }
             ResponseEvent::OutputItemAdded(item) => {
