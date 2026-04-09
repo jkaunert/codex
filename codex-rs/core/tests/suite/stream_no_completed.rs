@@ -13,6 +13,7 @@ use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_message_item_added;
 use core_test_support::responses::ev_output_text_delta;
 use core_test_support::responses::ev_response_created;
+use core_test_support::responses::start_websocket_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::streaming_sse::StreamingSseChunk;
 use core_test_support::streaming_sse::start_streaming_sse_server;
@@ -653,6 +654,108 @@ async fn fails_fast_after_repeated_commentary_plus_reasoning_retries_without_pro
         requests.len(),
         3,
         "expected commentary-plus-reasoning retry loop to stop before exhausting the full retry budget"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn websocket_retries_degrade_from_incremental_to_fresh_after_partial_progress() {
+    skip_if_no_network!();
+
+    let first_connection = vec![
+        vec![ev_response_created("resp-warm"), ev_completed("resp-warm")],
+        vec![
+            ev_response_created("resp-1"),
+            ev_message_item_added("msg-1", ""),
+            ev_output_text_delta("Routing: orchestrator-led"),
+            ev_commentary_message_item_done("msg-1", "Routing: orchestrator-led"),
+        ],
+    ];
+    let degraded_retry = |response_id: &str, message_id: &str| {
+        vec![
+            ev_response_created(response_id),
+            ev_message_item_added(message_id, ""),
+        ]
+    };
+    let server = start_websocket_server(vec![
+        first_connection,
+        vec![degraded_retry("resp-2", "msg-2")],
+        vec![degraded_retry("resp-3", "msg-3")],
+    ])
+    .await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config.model_provider.request_max_retries = Some(0);
+        config.model_provider.stream_max_retries = Some(5);
+        config.model_provider.stream_idle_timeout_ms = Some(50);
+    });
+    let TestCodex { codex, .. } = builder.build_with_websocket_server(&server).await.unwrap();
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+        })
+        .await
+        .unwrap();
+
+    let mut failure_message = None;
+    wait_for_event(&codex, |event| match event {
+        EventMsg::Error(error)
+            if error
+                .message
+                .contains("without making substantive progress toward a completed answer") =>
+        {
+            failure_message = Some(error.message.clone());
+            true
+        }
+        _ => false,
+    })
+    .await;
+
+    let failure_message = failure_message.expect("expected retry loop error");
+    assert!(
+        failure_message.contains("Routing: orchestrator-led"),
+        "expected last visible assistant message in error: {failure_message}"
+    );
+
+    let connections = server.connections();
+    assert_eq!(connections.len(), 3, "expected initial socket plus two reconnects");
+    assert_eq!(
+        connections[0].len(),
+        2,
+        "expected warmup and first real request on the initial websocket"
+    );
+    assert_eq!(
+        connections[1].len(),
+        1,
+        "expected one degraded retry request on the second websocket"
+    );
+    assert_eq!(
+        connections[2].len(),
+        1,
+        "expected one degraded retry request on the third websocket"
+    );
+
+    let initial_main_request = connections[0][1].body_json();
+    assert!(
+        initial_main_request["previous_response_id"].as_str().is_some(),
+        "expected first real websocket request after warmup to be incremental: {initial_main_request}"
+    );
+
+    let retry_one = connections[1][0].body_json();
+    let retry_two = connections[2][0].body_json();
+    assert!(
+        retry_one["previous_response_id"].is_null(),
+        "expected first reconnect to degrade to a fresh request: {retry_one}"
+    );
+    assert!(
+        retry_two["previous_response_id"].is_null(),
+        "expected second reconnect to degrade to a fresh request: {retry_two}"
     );
 
     server.shutdown().await;
