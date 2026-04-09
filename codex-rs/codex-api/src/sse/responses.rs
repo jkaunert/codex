@@ -281,7 +281,13 @@ pub fn process_responses_event(
         }
         "response.created" => {
             if event.response.is_some() {
-                return Ok(Some(ResponseEvent::Created {}));
+                let response_id = event
+                    .response
+                    .as_ref()
+                    .and_then(|response| response.get("id"))
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned);
+                return Ok(Some(ResponseEvent::Created { response_id }));
             }
         }
         "response.failed" => {
@@ -872,7 +878,7 @@ mod tests {
         }
 
         fn is_created(ev: &ResponseEvent) -> bool {
-            matches!(ev, ResponseEvent::Created)
+            matches!(ev, ResponseEvent::Created { .. })
         }
         fn is_output(ev: &ResponseEvent) -> bool {
             matches!(ev, ResponseEvent::OutputItemDone(_))
@@ -996,7 +1002,10 @@ mod tests {
         .await;
 
         assert_eq!(events.len(), 2);
-        assert_matches!(&events[0], ResponseEvent::Created);
+        assert_matches!(
+            &events[0],
+            ResponseEvent::Created { response_id } if response_id.as_deref() == Some("resp-1")
+        );
         assert_matches!(
             &events[1],
             ResponseEvent::Completed {
@@ -1032,7 +1041,10 @@ mod tests {
             &events[0],
             ResponseEvent::ServerModel(model) if model == CYBER_RESTRICTED_MODEL_FOR_TESTS
         );
-        assert_matches!(&events[1], ResponseEvent::Created);
+        assert_matches!(
+            &events[1],
+            ResponseEvent::Created { response_id } if response_id.as_deref() == Some("resp-1")
+        );
         assert_matches!(
             &events[2],
             ResponseEvent::Completed {

@@ -57,9 +57,12 @@ pub(crate) async fn run_responses_command(
 
 fn response_event_to_json(event: codex_api::ResponseEvent) -> serde_json::Value {
     match event {
-        codex_api::ResponseEvent::Created => {
-            json!({ "type": "response.created", "response": {} })
-        }
+        codex_api::ResponseEvent::Created { response_id } => match response_id {
+            Some(response_id) => {
+                json!({ "type": "response.created", "response": { "id": response_id } })
+            }
+            None => json!({ "type": "response.created", "response": {} }),
+        },
         codex_api::ResponseEvent::OutputItemDone(item) => {
             json!({ "type": "response.output_item.done", "item": item })
         }
@@ -150,7 +153,9 @@ mod tests {
 
     #[test]
     fn response_events_keep_replayable_response_envelopes() {
-        let created = response_event_to_json(codex_api::ResponseEvent::Created);
+        let created = response_event_to_json(codex_api::ResponseEvent::Created {
+            response_id: None,
+        });
         assert_eq!(created, json!({"type": "response.created", "response": {}}));
 
         let completed = response_event_to_json(codex_api::ResponseEvent::Completed {
