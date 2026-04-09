@@ -1450,7 +1450,11 @@ async fn responses_websocket_v2_creates_with_previous_response_id_on_prefix() {
     ]])
     .await;
 
-    let harness = websocket_harness_with_v2(&server, /*runtime_metrics_enabled*/ true).await;
+    let mut provider = websocket_provider(&server);
+    provider.stream_max_retries = Some(2);
+    provider.stream_idle_timeout_ms = Some(50);
+    let harness = websocket_harness_with_provider_options(provider, /*runtime_metrics_enabled*/ true)
+        .await;
     let mut session = harness.client.new_session();
     let prompt_one = prompt_with_input(vec![message_item("hello")]);
     let prompt_two = prompt_with_input(vec![
@@ -1602,6 +1606,84 @@ async fn responses_websocket_v2_after_error_uses_full_create_without_previous_re
         third["input"],
         serde_json::to_value(&prompt_three.input).unwrap()
     );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_websocket_v2_reconnect_reuses_partial_response_id_after_output_item_done() {
+    skip_if_no_network!();
+
+    let server = start_websocket_server_with_headers(vec![
+        WebSocketConnectionConfig {
+            requests: vec![vec![
+                ev_response_created("resp-partial-1"),
+                ev_assistant_message("msg-partial-1", "partial output"),
+            ]],
+            response_headers: Vec::new(),
+            accept_delay: None,
+            close_after_requests: true,
+        },
+        WebSocketConnectionConfig {
+            requests: vec![vec![
+                ev_response_created("resp-resume-1"),
+                ev_completed("resp-resume-1"),
+            ]],
+            response_headers: Vec::new(),
+            accept_delay: None,
+            close_after_requests: true,
+        },
+    ])
+    .await;
+
+    let harness = websocket_harness_with_v2(&server, /*runtime_metrics_enabled*/ true).await;
+    let mut session = harness.client.new_session();
+    let prompt = prompt_with_input(vec![message_item("hello")]);
+
+    let mut first_stream = session
+        .stream(
+            &prompt,
+            &harness.model_info,
+            &harness.session_telemetry,
+            harness.effort,
+            harness.summary,
+            /*service_tier*/ None,
+            /*turn_metadata_header*/ None,
+            &codex_rollout_trace::InferenceTraceContext::disabled(),
+        )
+        .await
+        .expect("first websocket stream failed");
+    let mut saw_error = false;
+    while let Some(event) = first_stream.next().await {
+        if event.is_err() {
+            saw_error = true;
+            break;
+        }
+    }
+    assert!(saw_error, "expected first websocket stream to fail");
+
+    stream_until_complete(&mut session, &harness, &prompt).await;
+
+    let connections = server.connections();
+    assert_eq!(connections.len(), 2);
+    let first = connections
+        .first()
+        .and_then(|connection| connection.first())
+        .expect("missing first request")
+        .body_json();
+    let second = connections
+        .get(1)
+        .and_then(|connection| connection.first())
+        .expect("missing reconnect request")
+        .body_json();
+
+    assert_eq!(first["type"].as_str(), Some("response.create"));
+    assert_eq!(second["type"].as_str(), Some("response.create"));
+    assert_eq!(
+        second["previous_response_id"].as_str(),
+        Some("resp-partial-1")
+    );
+    assert_eq!(second["input"], serde_json::json!([]));
 
     server.shutdown().await;
 }

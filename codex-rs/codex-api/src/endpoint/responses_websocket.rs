@@ -41,6 +41,7 @@ use tracing::error;
 use tracing::info;
 use tracing::instrument;
 use tracing::trace;
+use tracing::warn;
 use tungstenite::extensions::ExtensionsConfig;
 use tungstenite::extensions::compression::deflate::DeflateConfig;
 use tungstenite::protocol::WebSocketConfig;
@@ -533,6 +534,35 @@ fn json_header_value(value: Value) -> Option<HeaderValue> {
     HeaderValue::from_str(&value).ok()
 }
 
+fn response_event_kind(event: &ResponseEvent) -> &'static str {
+    match event {
+        ResponseEvent::Created { .. } => "created",
+        ResponseEvent::OutputItemDone(_) => "output_item_done",
+        ResponseEvent::OutputItemAdded(_) => "output_item_added",
+        ResponseEvent::ServerModel(_) => "server_model",
+        ResponseEvent::ModelVerifications(_) => "model_verifications",
+        ResponseEvent::ServerReasoningIncluded(_) => "server_reasoning_included",
+        ResponseEvent::Completed { .. } => "completed",
+        ResponseEvent::OutputTextDelta(_) => "output_text_delta",
+        ResponseEvent::ToolCallInputDelta { .. } => "tool_call_input_delta",
+        ResponseEvent::ReasoningSummaryDelta { .. } => "reasoning_summary_delta",
+        ResponseEvent::ReasoningContentDelta { .. } => "reasoning_content_delta",
+        ResponseEvent::ReasoningSummaryPartAdded { .. } => "reasoning_summary_part_added",
+        ResponseEvent::RateLimits(_) => "rate_limits",
+        ResponseEvent::ModelsEtag(_) => "models_etag",
+    }
+}
+
+fn is_non_commentary_stream_event(event: &ResponseEvent) -> bool {
+    matches!(
+        event,
+        ResponseEvent::Created { .. }
+            | ResponseEvent::OutputItemDone(_)
+            | ResponseEvent::OutputItemAdded(_)
+            | ResponseEvent::Completed { .. }
+    )
+}
+
 async fn run_websocket_response_stream(
     ws_stream: &mut WsStream,
     tx_event: mpsc::Sender<std::result::Result<ResponseEvent, ApiError>>,
@@ -542,6 +572,11 @@ async fn run_websocket_response_stream(
     connection_reused: bool,
 ) -> Result<(), ApiError> {
     let mut last_server_model: Option<String> = None;
+    let mut first_stream_event_kind: Option<&'static str> = None;
+    let mut observed_stream_event_kinds: Vec<&'static str> = Vec::new();
+    let mut stream_event_count: usize = 0;
+    let mut commentary_event_count: usize = 0;
+    let mut non_commentary_event_count: usize = 0;
     let request_text = match serde_json::to_string(&request_body) {
         Ok(text) => text,
         Err(err) => {
@@ -579,14 +614,38 @@ async fn run_websocket_response_stream(
         let message = match response {
             Ok(Some(Ok(msg))) => msg,
             Ok(Some(Err(err))) => {
+                warn!(
+                    first_stream_event_kind = first_stream_event_kind.unwrap_or("none"),
+                    observed_stream_event_kinds = ?observed_stream_event_kinds,
+                    stream_event_count,
+                    commentary_event_count,
+                    non_commentary_event_count,
+                    "websocket stream errored before completion"
+                );
                 return Err(ApiError::Stream(err.to_string()));
             }
             Ok(None) => {
+                warn!(
+                    first_stream_event_kind = first_stream_event_kind.unwrap_or("none"),
+                    observed_stream_event_kinds = ?observed_stream_event_kinds,
+                    stream_event_count,
+                    commentary_event_count,
+                    non_commentary_event_count,
+                    "websocket stream closed before completion"
+                );
                 return Err(ApiError::Stream(
                     "stream closed before response.completed".into(),
                 ));
             }
             Err(err) => {
+                warn!(
+                    first_stream_event_kind = first_stream_event_kind.unwrap_or("none"),
+                    observed_stream_event_kinds = ?observed_stream_event_kinds,
+                    stream_event_count,
+                    commentary_event_count,
+                    non_commentary_event_count,
+                    "websocket stream idle-timed out before completion"
+                );
                 return Err(err);
             }
         };
@@ -635,6 +694,18 @@ async fn run_websocket_response_stream(
                 }
                 match process_responses_event(event) {
                     Ok(Some(event)) => {
+                        let event_kind = response_event_kind(&event);
+                        first_stream_event_kind.get_or_insert(event_kind);
+                        if !observed_stream_event_kinds.contains(&event_kind) {
+                            observed_stream_event_kinds.push(event_kind);
+                        }
+                        stream_event_count = stream_event_count.saturating_add(1);
+                        if is_non_commentary_stream_event(&event) {
+                            non_commentary_event_count =
+                                non_commentary_event_count.saturating_add(1);
+                        } else {
+                            commentary_event_count = commentary_event_count.saturating_add(1);
+                        }
                         let is_completed = matches!(event, ResponseEvent::Completed { .. });
                         let _ = tx_event.send(Ok(event)).await;
                         if is_completed {
@@ -648,9 +719,25 @@ async fn run_websocket_response_stream(
                 }
             }
             Message::Binary(_) => {
+                warn!(
+                    first_stream_event_kind = first_stream_event_kind.unwrap_or("none"),
+                    observed_stream_event_kinds = ?observed_stream_event_kinds,
+                    stream_event_count,
+                    commentary_event_count,
+                    non_commentary_event_count,
+                    "websocket stream received unexpected binary event"
+                );
                 return Err(ApiError::Stream("unexpected binary websocket event".into()));
             }
             Message::Close(_) => {
+                warn!(
+                    first_stream_event_kind = first_stream_event_kind.unwrap_or("none"),
+                    observed_stream_event_kinds = ?observed_stream_event_kinds,
+                    stream_event_count,
+                    commentary_event_count,
+                    non_commentary_event_count,
+                    "websocket stream closed by server before completion"
+                );
                 return Err(ApiError::Stream(
                     "websocket closed by server before response.completed".into(),
                 ));
