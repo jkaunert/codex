@@ -1054,6 +1054,7 @@ async fn run_sampling_request(
     let mut retries = 0;
     let mut consecutive_no_progress_retries = 0;
     let mut consecutive_early_output_item_stalls = 0;
+    let mut last_no_progress_retry_tier: Option<NoProgressRetryTier> = None;
     let mut initial_input = Some(input);
     loop {
         let prompt_input = if let Some(input) = initial_input.take() {
@@ -1116,12 +1117,24 @@ async fn run_sampling_request(
                     .await;
             }
             if progress.has_no_substantive_progress() {
+                let no_progress_retry_tier = progress.no_progress_retry_tier();
+                let reset_no_progress_counter = matches!(
+                    (last_no_progress_retry_tier, no_progress_retry_tier),
+                    (Some(NoProgressRetryTier::Empty), NoProgressRetryTier::VisibleOnly)
+                );
+                if consecutive_no_progress_retries == 0 || reset_no_progress_counter {
+                    consecutive_no_progress_retries = 1;
+                } else {
+                    consecutive_no_progress_retries += 1;
+                }
+                last_no_progress_retry_tier = Some(no_progress_retry_tier);
                 if early_output_item_stall {
                     warn!(
                         consecutive_early_output_item_stalls,
                         output_item_added = progress.output_item_added,
                         output_item_done = progress.output_item_done,
                         output_text_delta = progress.output_text_delta,
+                        no_progress_retry_tier = ?no_progress_retry_tier,
                         "stream stalled after an output item was created but before durable visible output arrived"
                     );
                 }
@@ -1143,9 +1156,9 @@ async fn run_sampling_request(
                     retries = 0;
                     consecutive_no_progress_retries = 0;
                     consecutive_early_output_item_stalls = 0;
+                    last_no_progress_retry_tier = None;
                     continue;
                 }
-                consecutive_no_progress_retries += 1;
                 if consecutive_no_progress_retries >= NO_PROGRESS_RETRY_LOOP_THRESHOLD {
                     return Err(CodexErr::RepeatedNoProgressWithoutCompletion {
                         retries: consecutive_no_progress_retries,
@@ -1158,10 +1171,12 @@ async fn run_sampling_request(
             } else {
                 consecutive_no_progress_retries = 0;
                 consecutive_early_output_item_stalls = 0;
+                last_no_progress_retry_tier = None;
             }
         } else {
             consecutive_no_progress_retries = 0;
             consecutive_early_output_item_stalls = 0;
+            last_no_progress_retry_tier = None;
         }
 
         // Use the configured provider-specific stream retry budget.
@@ -1416,6 +1431,12 @@ struct SamplingAttemptProgress {
     output_text_delta: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NoProgressRetryTier {
+    Empty,
+    VisibleOnly,
+}
+
 impl SamplingAttemptProgress {
     fn note_output_item_added(&mut self, item: &ResponseItem) {
         self.output_item_added = true;
@@ -1485,6 +1506,24 @@ impl SamplingAttemptProgress {
 
     fn has_no_substantive_progress(&self) -> bool {
         self.substantive_output_count == 0 && self.tool_future_count == 0
+    }
+
+    fn has_durable_visible_output(&self) -> bool {
+        self.output_item_done
+            || self.output_text_delta
+            || self
+                .last_agent_message
+                .as_ref()
+                .is_some_and(|text| !text.trim().is_empty())
+            || !self.partial_assistant_text.trim().is_empty()
+    }
+
+    fn no_progress_retry_tier(&self) -> NoProgressRetryTier {
+        if self.has_durable_visible_output() {
+            NoProgressRetryTier::VisibleOnly
+        } else {
+            NoProgressRetryTier::Empty
+        }
     }
 
     fn partial_assistant_retry_item(&self) -> Option<ResponseItem> {

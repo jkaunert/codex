@@ -660,6 +660,103 @@ async fn fails_fast_after_repeated_commentary_plus_reasoning_retries_without_pro
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resets_no_progress_loop_when_retry_branch_improves_to_visible_commentary() {
+    skip_if_no_network!();
+
+    let empty_stall_attempt = |response_id: &str, message_id: &str| {
+        vec![
+            chunk(ev_response_created(response_id)),
+            chunk(ev_message_item_added(message_id, "")),
+        ]
+    };
+
+    let visible_commentary_attempt = |response_id: &str, message_id: &str| {
+        vec![
+            chunk(ev_response_created(response_id)),
+            chunk(ev_message_item_added(message_id, "")),
+            chunk(ev_output_text_delta("Routing: orchestrator-led")),
+            chunk(ev_commentary_message_item_done(
+                message_id,
+                "Routing: orchestrator-led",
+            )),
+        ]
+    };
+
+    let final_attempt = vec![
+        chunk(ev_response_created("resp-final")),
+        chunk(ev_message_item_added("msg-final", "")),
+        chunk(ev_output_text_delta("final after improved retry")),
+        chunk(ev_message_item_done("msg-final", "final after improved retry")),
+        chunk(ev_completed("resp-final")),
+    ];
+
+    let (server, _) = start_streaming_sse_server(vec![
+        empty_stall_attempt("resp-empty-1", "msg-empty-1"),
+        empty_stall_attempt("resp-empty-2", "msg-empty-2"),
+        visible_commentary_attempt("resp-commentary", "msg-commentary"),
+        final_attempt,
+    ])
+    .await;
+
+    let model_provider = ModelProviderInfo {
+        name: "openai".into(),
+        base_url: Some(format!("{}/v1", server.uri())),
+        env_key: Some("PATH".into()),
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        auth: None,
+        aws: None,
+        wire_api: WireApi::Responses,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: Some(0),
+        stream_max_retries: Some(5),
+        stream_idle_timeout_ms: Some(50),
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+    };
+
+    let TestCodex { codex, .. } = test_codex()
+        .with_config(move |config| {
+            config.model_provider = model_provider;
+        })
+        .build_with_streaming_server(&server)
+        .await
+        .unwrap();
+
+    codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+        })
+        .await
+        .unwrap();
+
+    wait_for_event(
+        &codex,
+        |event| matches!(event, EventMsg::AgentMessage(message) if message.message == "final after improved retry"),
+    )
+    .await;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    let requests = server.requests().await;
+    assert_eq!(
+        requests.len(),
+        4,
+        "expected the no-progress loop counter to reset once durable visible commentary arrived"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn websocket_first_reconnect_reuses_partial_response_id_after_partial_progress() {
     skip_if_no_network!();
 
