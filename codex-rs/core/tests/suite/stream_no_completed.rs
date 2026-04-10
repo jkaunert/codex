@@ -464,6 +464,89 @@ async fn retries_rebuild_prompt_from_history_after_commentary_delta_only_interru
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fail_fast_reports_last_visible_message_across_no_progress_retries() {
+    skip_if_no_network!();
+
+    let first_attempt = vec![
+        chunk(ev_response_created("resp-commentary")),
+        chunk(ev_message_item_added("msg-1", "")),
+        chunk(ev_output_text_delta("Routing: orchestrator-led")),
+    ];
+
+    let empty_attempt = |response_id: &str| vec![chunk(ev_response_created(response_id))];
+
+    let (server, _) = start_streaming_sse_server(vec![
+        first_attempt,
+        empty_attempt("resp-2"),
+        empty_attempt("resp-3"),
+    ])
+    .await;
+
+    let model_provider = ModelProviderInfo {
+        name: "openai".into(),
+        base_url: Some(format!("{}/v1", server.uri())),
+        env_key: Some("PATH".into()),
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        auth: None,
+        aws: None,
+        wire_api: WireApi::Responses,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: Some(0),
+        stream_max_retries: Some(5),
+        stream_idle_timeout_ms: Some(50),
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+    };
+
+    let TestCodex { codex, .. } = test_codex()
+        .with_config(move |config| {
+            config.model_provider = model_provider;
+        })
+        .build_with_streaming_server(&server)
+        .await
+        .unwrap();
+
+    codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+        })
+        .await
+        .unwrap();
+
+    let mut failure_message = None;
+    wait_for_event(&codex, |event| match event {
+        EventMsg::Error(error)
+            if error
+                .message
+                .contains("after emitting visible commentary/output but still never completed the answer") =>
+        {
+            failure_message = Some(error.message.clone());
+            true
+        }
+        _ => false,
+    })
+    .await;
+
+    let failure_message = failure_message.expect("expected retry loop error");
+    assert!(
+        failure_message.contains("Routing: orchestrator-led"),
+        "expected last visible assistant message in error: {failure_message}"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn fails_fast_after_repeated_commentary_only_retries_without_progress() {
     skip_if_no_network!();
 
@@ -533,7 +616,7 @@ async fn fails_fast_after_repeated_commentary_only_retries_without_progress() {
         EventMsg::Error(error)
             if error
                 .message
-                .contains("without making substantive progress toward a completed answer") =>
+                .contains("after emitting visible commentary/output but still never completed the answer") =>
         {
             failure_message = Some(error.message.clone());
             true
@@ -633,7 +716,7 @@ async fn fails_fast_after_repeated_commentary_plus_reasoning_retries_without_pro
         EventMsg::Error(error)
             if error
                 .message
-                .contains("without making substantive progress toward a completed answer") =>
+                .contains("after emitting visible commentary/output but still never completed the answer") =>
         {
             failure_message = Some(error.message.clone());
             true
@@ -807,7 +890,7 @@ async fn websocket_first_reconnect_reuses_partial_response_id_after_partial_prog
         EventMsg::Error(error)
             if error
                 .message
-                .contains("without making substantive progress toward a completed answer") =>
+                .contains("after emitting visible commentary/output but still never completed the answer") =>
         {
             failure_message = Some(error.message.clone());
             true
@@ -854,6 +937,76 @@ async fn websocket_first_reconnect_reuses_partial_response_id_after_partial_prog
     );
     assert_eq!(retry_one["input"], serde_json::json!([]));
     assert_eq!(retry_two["type"].as_str(), Some("response.create"));
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fails_fast_after_repeated_visible_heading_output_without_completion() {
+    skip_if_no_network!();
+
+    let partial_heading_text = "Routing: orchestrator-led\nCandidate findings\n- privacy export no longer includes cloud data";
+    let first_connection = vec![
+        vec![ev_response_created("resp-warm"), ev_completed("resp-warm")],
+        vec![
+            ev_response_created("resp-1"),
+            ev_message_item_added("msg-1", ""),
+            ev_output_text_delta(partial_heading_text),
+            ev_commentary_message_item_done("msg-1", partial_heading_text),
+        ],
+    ];
+    let degraded_retry = |response_id: &str, message_id: &str| {
+        vec![
+            ev_response_created(response_id),
+            ev_message_item_added(message_id, ""),
+        ]
+    };
+    let server = start_websocket_server(vec![
+        first_connection,
+        vec![degraded_retry("resp-2", "msg-2")],
+        vec![degraded_retry("resp-3", "msg-3")],
+    ])
+    .await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config.model_provider.request_max_retries = Some(0);
+        config.model_provider.stream_max_retries = Some(5);
+        config.model_provider.stream_idle_timeout_ms = Some(50);
+    });
+    let TestCodex { codex, .. } = builder.build_with_websocket_server(&server).await.unwrap();
+
+    codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+        })
+        .await
+        .unwrap();
+
+    let mut failure_message = None;
+    wait_for_event(&codex, |event| match event {
+        EventMsg::Error(error)
+            if error
+                .message
+                .contains("after emitting visible commentary/output but still never completed the answer") =>
+        {
+            failure_message = Some(error.message.clone());
+            true
+        }
+        _ => false,
+    })
+    .await;
+
+    let failure_message = failure_message.expect("expected visible-output retry loop error");
+    assert!(
+        failure_message.contains("Candidate findings"),
+        "expected partial heading text in error: {failure_message}"
+    );
 
     server.shutdown().await;
 }

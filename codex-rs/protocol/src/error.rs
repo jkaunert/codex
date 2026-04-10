@@ -134,6 +134,13 @@ pub enum CodexErr {
         retries: usize,
         last_message: String,
     },
+    #[error(
+        "model retried {retries} times after emitting visible commentary/output but still never completed the answer; last visible assistant message: {last_message}"
+    )]
+    RepeatedVisibleOutputWithoutCompletion {
+        retries: usize,
+        last_message: String,
+    },
     /// Agent loop died unexpectedly
     #[error("internal error; agent loop died unexpectedly")]
     InternalAgentDied,
@@ -189,6 +196,7 @@ impl CodexErr {
             | CodexErr::Sandbox(_)
             | CodexErr::LandlockSandboxExecutableNotProvided
             | CodexErr::RepeatedNoProgressWithoutCompletion { .. }
+            | CodexErr::RepeatedVisibleOutputWithoutCompletion { .. }
             | CodexErr::RetryLimit(_)
             | CodexErr::ContextWindowExceeded
             | CodexErr::ThreadNotFound(_)
@@ -232,7 +240,8 @@ impl CodexErr {
             CodexErr::RetryLimit(_) => CodexErrorInfo::ResponseTooManyFailedAttempts {
                 http_status_code: self.http_status_code_value(),
             },
-            CodexErr::RepeatedNoProgressWithoutCompletion { .. } => CodexErrorInfo::Other,
+            CodexErr::RepeatedNoProgressWithoutCompletion { .. }
+            | CodexErr::RepeatedVisibleOutputWithoutCompletion { .. } => CodexErrorInfo::Other,
             CodexErr::ConnectionFailed(_) => CodexErrorInfo::HttpConnectionFailed {
                 http_status_code: self.http_status_code_value(),
             },

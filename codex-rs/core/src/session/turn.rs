@@ -1055,6 +1055,7 @@ async fn run_sampling_request(
     let mut consecutive_no_progress_retries = 0;
     let mut consecutive_early_output_item_stalls = 0;
     let mut last_no_progress_retry_tier: Option<NoProgressRetryTier> = None;
+    let mut last_visible_message_across_no_progress_retries: Option<String> = None;
     let mut initial_input = Some(input);
     loop {
         let prompt_input = if let Some(input) = initial_input.take() {
@@ -1128,6 +1129,9 @@ async fn run_sampling_request(
                     consecutive_no_progress_retries += 1;
                 }
                 last_no_progress_retry_tier = Some(no_progress_retry_tier);
+                if let Some(message) = progress.last_visible_assistant_message() {
+                    last_visible_message_across_no_progress_retries = Some(message.to_string());
+                }
                 if early_output_item_stall {
                     warn!(
                         consecutive_early_output_item_stalls,
@@ -1157,26 +1161,41 @@ async fn run_sampling_request(
                     consecutive_no_progress_retries = 0;
                     consecutive_early_output_item_stalls = 0;
                     last_no_progress_retry_tier = None;
+                    last_visible_message_across_no_progress_retries = None;
                     continue;
                 }
                 if consecutive_no_progress_retries >= NO_PROGRESS_RETRY_LOOP_THRESHOLD {
-                    return Err(CodexErr::RepeatedNoProgressWithoutCompletion {
-                        retries: consecutive_no_progress_retries,
-                        last_message: progress
-                            .last_agent_message
-                            .clone()
-                            .unwrap_or_else(|| "no assistant message emitted".to_string()),
-                    });
+                    let last_message = last_visible_message_across_no_progress_retries
+                        .clone()
+                        .or_else(|| progress.last_visible_assistant_message().map(str::to_string))
+                        .unwrap_or_else(|| "no assistant message emitted".to_string());
+                    return Err(
+                        if last_visible_message_across_no_progress_retries.is_some()
+                            || matches!(no_progress_retry_tier, NoProgressRetryTier::VisibleOnly)
+                        {
+                            CodexErr::RepeatedVisibleOutputWithoutCompletion {
+                                retries: consecutive_no_progress_retries,
+                                last_message,
+                            }
+                        } else {
+                            CodexErr::RepeatedNoProgressWithoutCompletion {
+                                retries: consecutive_no_progress_retries,
+                                last_message,
+                            }
+                        },
+                    );
                 }
             } else {
                 consecutive_no_progress_retries = 0;
                 consecutive_early_output_item_stalls = 0;
                 last_no_progress_retry_tier = None;
+                last_visible_message_across_no_progress_retries = None;
             }
         } else {
             consecutive_no_progress_retries = 0;
             consecutive_early_output_item_stalls = 0;
             last_no_progress_retry_tier = None;
+            last_visible_message_across_no_progress_retries = None;
         }
 
         // Use the configured provider-specific stream retry budget.
@@ -1511,11 +1530,7 @@ impl SamplingAttemptProgress {
     fn has_durable_visible_output(&self) -> bool {
         self.output_item_done
             || self.output_text_delta
-            || self
-                .last_agent_message
-                .as_ref()
-                .is_some_and(|text| !text.trim().is_empty())
-            || !self.partial_assistant_text.trim().is_empty()
+            || self.last_visible_assistant_message().is_some()
     }
 
     fn no_progress_retry_tier(&self) -> NoProgressRetryTier {
@@ -1524,6 +1539,16 @@ impl SamplingAttemptProgress {
         } else {
             NoProgressRetryTier::Empty
         }
+    }
+
+    fn last_visible_assistant_message(&self) -> Option<&str> {
+        self.last_agent_message
+            .as_deref()
+            .filter(|text| !text.trim().is_empty())
+            .or_else(|| {
+                (!self.partial_assistant_text.trim().is_empty())
+                    .then_some(self.partial_assistant_text.as_str())
+            })
     }
 
     fn partial_assistant_retry_item(&self) -> Option<ResponseItem> {
