@@ -1053,6 +1053,7 @@ async fn run_sampling_request(
         .await;
     let mut retries = 0;
     let mut consecutive_no_progress_retries = 0;
+    let mut consecutive_early_output_item_stalls = 0;
     let mut initial_input = Some(input);
     loop {
         let prompt_input = if let Some(input) = initial_input.take() {
@@ -1101,6 +1102,13 @@ async fn run_sampling_request(
         };
 
         if let Some(progress) = stream_progress.as_ref() {
+            let early_output_item_stall =
+                progress.stalled_after_output_item_added_without_visible_output();
+            if early_output_item_stall {
+                consecutive_early_output_item_stalls += 1;
+            } else {
+                consecutive_early_output_item_stalls = 0;
+            }
             if progress.has_no_substantive_progress()
                 && let Some(partial_item) = progress.partial_assistant_retry_item()
             {
@@ -1108,6 +1116,35 @@ async fn run_sampling_request(
                     .await;
             }
             if progress.has_no_substantive_progress() {
+                if early_output_item_stall {
+                    warn!(
+                        consecutive_early_output_item_stalls,
+                        output_item_added = progress.output_item_added,
+                        output_item_done = progress.output_item_done,
+                        output_text_delta = progress.output_text_delta,
+                        "stream stalled after an output item was created but before durable visible output arrived"
+                    );
+                }
+                if early_output_item_stall
+                    && consecutive_early_output_item_stalls
+                        >= EARLY_OUTPUT_ITEM_STALL_FALLBACK_THRESHOLD
+                    && client_session.try_switch_fallback_transport(
+                        &turn_context.session_telemetry,
+                        &turn_context.model_info,
+                    )
+                {
+                    sess.send_event(
+                        &turn_context,
+                        EventMsg::Warning(WarningEvent {
+                            message: "Falling back from WebSockets to HTTPS transport after repeated early stream stalls.".to_string(),
+                        }),
+                    )
+                    .await;
+                    retries = 0;
+                    consecutive_no_progress_retries = 0;
+                    consecutive_early_output_item_stalls = 0;
+                    continue;
+                }
                 consecutive_no_progress_retries += 1;
                 if consecutive_no_progress_retries >= NO_PROGRESS_RETRY_LOOP_THRESHOLD {
                     return Err(CodexErr::RepeatedNoProgressWithoutCompletion {
@@ -1120,9 +1157,11 @@ async fn run_sampling_request(
                 }
             } else {
                 consecutive_no_progress_retries = 0;
+                consecutive_early_output_item_stalls = 0;
             }
         } else {
             consecutive_no_progress_retries = 0;
+            consecutive_early_output_item_stalls = 0;
         }
 
         // Use the configured provider-specific stream retry budget.
@@ -1361,6 +1400,7 @@ struct SamplingRequestResult {
 }
 
 const NO_PROGRESS_RETRY_LOOP_THRESHOLD: usize = 3;
+const EARLY_OUTPUT_ITEM_STALL_FALLBACK_THRESHOLD: usize = 2;
 
 #[derive(Clone, Debug, Default)]
 struct SamplingAttemptProgress {
@@ -1371,10 +1411,14 @@ struct SamplingAttemptProgress {
     last_agent_message: Option<String>,
     partial_assistant_phase: Option<MessagePhase>,
     partial_assistant_text: String,
+    output_item_added: bool,
+    output_item_done: bool,
+    output_text_delta: bool,
 }
 
 impl SamplingAttemptProgress {
     fn note_output_item_added(&mut self, item: &ResponseItem) {
+        self.output_item_added = true;
         if let ResponseItem::Message { role, phase, .. } = item
             && role == "assistant"
         {
@@ -1383,6 +1427,7 @@ impl SamplingAttemptProgress {
     }
 
     fn note_output_item_done(&mut self, item: &ResponseItem) {
+        self.output_item_done = true;
         match item {
             ResponseItem::Message { role, phase, .. }
                 if role == "assistant" && matches!(phase, Some(MessagePhase::Commentary)) =>
@@ -1424,6 +1469,7 @@ impl SamplingAttemptProgress {
         if visible_text.is_empty() {
             return;
         }
+        self.output_text_delta = true;
         self.partial_assistant_text.push_str(visible_text);
         self.last_agent_message = Some(self.partial_assistant_text.clone());
     }
@@ -1454,6 +1500,46 @@ impl SamplingAttemptProgress {
             end_turn: None,
             phase: self.partial_assistant_phase.clone(),
         })
+    }
+
+    fn stalled_after_output_item_added_without_visible_output(&self) -> bool {
+        self.output_item_added && !self.output_item_done && !self.output_text_delta
+    }
+}
+
+#[cfg(test)]
+mod sampling_attempt_progress_tests {
+    use super::*;
+
+    #[test]
+    fn detects_early_assistant_output_stall() {
+        let mut progress = SamplingAttemptProgress::default();
+        let commentary_item = ResponseItem::Message {
+            id: Some("msg-1".to_string()),
+            role: "assistant".to_string(),
+            content: vec![],
+            end_turn: None,
+            phase: Some(MessagePhase::Commentary),
+        };
+
+        progress.note_output_item_added(&commentary_item);
+        assert!(progress.stalled_after_output_item_added_without_visible_output());
+
+        progress.note_streamed_assistant_text("Routing: orchestrator-led");
+        assert!(!progress.stalled_after_output_item_added_without_visible_output());
+
+        let mut completed_progress = SamplingAttemptProgress::default();
+        completed_progress.note_output_item_added(&commentary_item);
+        completed_progress.note_output_item_done(&ResponseItem::Message {
+            id: Some("msg-1".to_string()),
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: "Routing: orchestrator-led".to_string(),
+            }],
+            end_turn: None,
+            phase: Some(MessagePhase::Commentary),
+        });
+        assert!(!completed_progress.stalled_after_output_item_added_without_visible_output());
     }
 }
 

@@ -52,6 +52,8 @@ pub fn stream_from_fixture(
         tx_event,
         idle_timeout,
         /*telemetry*/ None,
+        /*debug_request_attempt_seq*/ None,
+        /*debug_transport_reason*/ None,
     ));
     Ok(ResponseStream { rx_event })
 }
@@ -61,6 +63,8 @@ pub fn spawn_response_stream(
     idle_timeout: Duration,
     telemetry: Option<Arc<dyn SseTelemetry>>,
     turn_state: Option<Arc<OnceLock<String>>>,
+    debug_request_attempt_seq: Option<u64>,
+    debug_transport_reason: Option<String>,
 ) -> ResponseStream {
     let rate_limit_snapshots = parse_all_rate_limits(&stream_response.headers);
     let models_etag = stream_response
@@ -101,7 +105,15 @@ pub fn spawn_response_stream(
                 .send(Ok(ResponseEvent::ServerReasoningIncluded(true)))
                 .await;
         }
-        process_sse(stream_response.bytes, tx_event, idle_timeout, telemetry).await;
+        process_sse(
+            stream_response.bytes,
+            tx_event,
+            idle_timeout,
+            telemetry,
+            debug_request_attempt_seq,
+            debug_transport_reason,
+        )
+        .await;
     });
 
     ResponseStream { rx_event }
@@ -429,10 +441,23 @@ pub async fn process_sse(
     tx_event: mpsc::Sender<Result<ResponseEvent, ApiError>>,
     idle_timeout: Duration,
     telemetry: Option<Arc<dyn SseTelemetry>>,
+    debug_request_attempt_seq: Option<u64>,
+    debug_transport_reason: Option<String>,
 ) {
     let mut stream = stream.eventsource();
     let mut response_error: Option<ApiError> = None;
     let mut last_server_model: Option<String> = None;
+    let stream_started_at = Instant::now();
+    let mut first_event_elapsed_ms: Option<u128> = None;
+    let mut last_event_elapsed_ms: Option<u128> = None;
+    let mut last_event_kind: Option<String> = None;
+    let mut first_output_item_added_elapsed_ms: Option<u128> = None;
+    let mut first_output_item_done_elapsed_ms: Option<u128> = None;
+    let mut first_output_text_delta_elapsed_ms: Option<u128> = None;
+    let mut observed_stream_event_kinds: Vec<String> = Vec::new();
+    let mut stream_event_count: u64 = 0;
+    let mut created_response_id: Option<String> = None;
+    let mut completed_response_id: Option<String> = None;
 
     loop {
         let start = Instant::now();
@@ -444,6 +469,25 @@ pub async fn process_sse(
             Ok(Some(Ok(sse))) => sse,
             Ok(Some(Err(e))) => {
                 debug!("SSE Error: {e:#}");
+                tracing::warn!(
+                    request_attempt_seq = debug_request_attempt_seq,
+                    transport_reason = debug_transport_reason.as_deref().unwrap_or("unknown"),
+                    created_response_id = created_response_id.as_deref().unwrap_or("none"),
+                    completed_response_id = completed_response_id.as_deref().unwrap_or("none"),
+                    ?first_event_elapsed_ms,
+                    ?last_event_elapsed_ms,
+                    last_event_kind = last_event_kind.as_deref().unwrap_or("none"),
+                    ?first_output_item_added_elapsed_ms,
+                    ?first_output_item_done_elapsed_ms,
+                    ?first_output_text_delta_elapsed_ms,
+                    first_stream_event_kind = observed_stream_event_kinds
+                        .first()
+                        .map(String::as_str)
+                        .unwrap_or("none"),
+                    ?observed_stream_event_kinds,
+                    stream_event_count,
+                    "sse stream errored before completion"
+                );
                 let _ = tx_event.send(Err(ApiError::Stream(e.to_string()))).await;
                 return;
             }
@@ -451,10 +495,48 @@ pub async fn process_sse(
                 let error = response_error.unwrap_or(ApiError::Stream(
                     "stream closed before response.completed".into(),
                 ));
+                tracing::warn!(
+                    request_attempt_seq = debug_request_attempt_seq,
+                    transport_reason = debug_transport_reason.as_deref().unwrap_or("unknown"),
+                    created_response_id = created_response_id.as_deref().unwrap_or("none"),
+                    completed_response_id = completed_response_id.as_deref().unwrap_or("none"),
+                    ?first_event_elapsed_ms,
+                    ?last_event_elapsed_ms,
+                    last_event_kind = last_event_kind.as_deref().unwrap_or("none"),
+                    ?first_output_item_added_elapsed_ms,
+                    ?first_output_item_done_elapsed_ms,
+                    ?first_output_text_delta_elapsed_ms,
+                    first_stream_event_kind = observed_stream_event_kinds
+                        .first()
+                        .map(String::as_str)
+                        .unwrap_or("none"),
+                    ?observed_stream_event_kinds,
+                    stream_event_count,
+                    "sse stream closed before completion"
+                );
                 let _ = tx_event.send(Err(error)).await;
                 return;
             }
             Err(_) => {
+                tracing::warn!(
+                    request_attempt_seq = debug_request_attempt_seq,
+                    transport_reason = debug_transport_reason.as_deref().unwrap_or("unknown"),
+                    created_response_id = created_response_id.as_deref().unwrap_or("none"),
+                    completed_response_id = completed_response_id.as_deref().unwrap_or("none"),
+                    ?first_event_elapsed_ms,
+                    ?last_event_elapsed_ms,
+                    last_event_kind = last_event_kind.as_deref().unwrap_or("none"),
+                    ?first_output_item_added_elapsed_ms,
+                    ?first_output_item_done_elapsed_ms,
+                    ?first_output_text_delta_elapsed_ms,
+                    first_stream_event_kind = observed_stream_event_kinds
+                        .first()
+                        .map(String::as_str)
+                        .unwrap_or("none"),
+                    ?observed_stream_event_kinds,
+                    stream_event_count,
+                    "sse stream idle-timed out before completion"
+                );
                 let _ = tx_event
                     .send(Err(ApiError::Stream("idle timeout waiting for SSE".into())))
                     .await;
@@ -472,6 +554,46 @@ pub async fn process_sse(
             }
         };
         let model_verifications = event.model_verifications();
+
+        let event_elapsed_ms = stream_started_at.elapsed().as_millis();
+        first_event_elapsed_ms.get_or_insert(event_elapsed_ms);
+        last_event_elapsed_ms = Some(event_elapsed_ms);
+        stream_event_count += 1;
+        let event_kind = event.kind.clone();
+        if !observed_stream_event_kinds.contains(&event_kind) {
+            observed_stream_event_kinds.push(event_kind.clone());
+        }
+        last_event_kind = Some(event_kind.clone());
+        match event_kind.as_str() {
+            "response.output_item.added" => {
+                first_output_item_added_elapsed_ms.get_or_insert(event_elapsed_ms);
+            }
+            "response.output_item.done" => {
+                first_output_item_done_elapsed_ms.get_or_insert(event_elapsed_ms);
+            }
+            "response.output_text.delta" => {
+                first_output_text_delta_elapsed_ms.get_or_insert(event_elapsed_ms);
+            }
+            _ => {}
+        }
+        if event_kind == "response.created" {
+            created_response_id = event
+                .response
+                .as_ref()
+                .and_then(|response| response.get("id"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .or(created_response_id);
+        }
+        if event_kind == "response.completed" {
+            completed_response_id = event
+                .response
+                .as_ref()
+                .and_then(|response| response.get("id"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .or(completed_response_id);
+        }
 
         if let Some(model) = event.response_model()
             && last_server_model.as_deref() != Some(model.as_str())
@@ -501,6 +623,25 @@ pub async fn process_sse(
                     return;
                 }
                 if is_completed {
+                    tracing::warn!(
+                        request_attempt_seq = debug_request_attempt_seq,
+                        transport_reason = debug_transport_reason.as_deref().unwrap_or("unknown"),
+                        created_response_id = created_response_id.as_deref().unwrap_or("none"),
+                        completed_response_id = completed_response_id.as_deref().unwrap_or("none"),
+                        ?first_event_elapsed_ms,
+                        ?last_event_elapsed_ms,
+                        last_event_kind = last_event_kind.as_deref().unwrap_or("none"),
+                        ?first_output_item_added_elapsed_ms,
+                        ?first_output_item_done_elapsed_ms,
+                        ?first_output_text_delta_elapsed_ms,
+                        first_stream_event_kind = observed_stream_event_kinds
+                            .first()
+                            .map(String::as_str)
+                            .unwrap_or("none"),
+                        ?observed_stream_event_kinds,
+                        stream_event_count,
+                        "sse stream completed"
+                    );
                     return;
                 }
             }
@@ -613,6 +754,8 @@ mod tests {
             tx,
             idle_timeout(),
             /*telemetry*/ None,
+            /*debug_request_attempt_seq*/ None,
+            /*debug_transport_reason*/ None,
         ));
 
         let mut events = Vec::new();
@@ -644,6 +787,8 @@ mod tests {
             tx,
             idle_timeout(),
             /*telemetry*/ None,
+            /*debug_request_attempt_seq*/ None,
+            /*debug_transport_reason*/ None,
         ));
 
         let mut out = Vec::new();
@@ -837,6 +982,8 @@ mod tests {
             tx,
             idle_timeout(),
             /*telemetry*/ None,
+            /*debug_request_attempt_seq*/ None,
+            /*debug_transport_reason*/ None,
         ));
 
         let events = tokio::time::timeout(Duration::from_millis(1000), async {
@@ -1082,6 +1229,8 @@ mod tests {
             idle_timeout(),
             /*telemetry*/ None,
             /*turn_state*/ None,
+            /*debug_request_attempt_seq*/ None,
+            /*debug_transport_reason*/ None,
         );
         let event = stream
             .rx_event
@@ -1122,6 +1271,8 @@ mod tests {
             idle_timeout(),
             /*telemetry*/ None,
             /*turn_state*/ None,
+            /*debug_request_attempt_seq*/ None,
+            /*debug_transport_reason*/ None,
         );
         let mut events = Vec::new();
         while let Some(event) = stream.rx_event.recv().await {

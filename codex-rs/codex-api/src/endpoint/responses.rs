@@ -35,6 +35,8 @@ pub struct ResponsesOptions {
     pub extra_headers: HeaderMap,
     pub compression: Compression,
     pub turn_state: Option<Arc<OnceLock<String>>>,
+    pub debug_request_attempt_seq: Option<u64>,
+    pub debug_transport_reason: Option<String>,
 }
 
 impl<T: HttpTransport> ResponsesClient<T> {
@@ -77,6 +79,8 @@ impl<T: HttpTransport> ResponsesClient<T> {
             extra_headers,
             compression,
             turn_state,
+            debug_request_attempt_seq,
+            debug_transport_reason,
         } = options;
 
         let mut body = serde_json::to_value(&request)
@@ -94,7 +98,15 @@ impl<T: HttpTransport> ResponsesClient<T> {
             insert_header(&mut headers, "x-openai-subagent", &subagent);
         }
 
-        self.stream(body, headers, compression, turn_state).await
+        self.stream(
+            body,
+            headers,
+            compression,
+            turn_state,
+            debug_request_attempt_seq,
+            debug_transport_reason,
+        )
+        .await
     }
 
     fn path() -> &'static str {
@@ -118,6 +130,8 @@ impl<T: HttpTransport> ResponsesClient<T> {
         extra_headers: HeaderMap,
         compression: Compression,
         turn_state: Option<Arc<OnceLock<String>>>,
+        debug_request_attempt_seq: Option<u64>,
+        debug_transport_reason: Option<String>,
     ) -> Result<ResponseStream, ApiError> {
         let request_compression = match compression {
             Compression::None => RequestCompression::None,
@@ -146,6 +160,8 @@ impl<T: HttpTransport> ResponsesClient<T> {
             self.session.provider().stream_idle_timeout,
             self.sse_telemetry.clone(),
             turn_state,
+            debug_request_attempt_seq,
+            debug_transport_reason,
         ))
     }
 }

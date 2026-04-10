@@ -264,6 +264,8 @@ async fn responses_client_uses_responses_path() -> Result<()> {
             HeaderMap::new(),
             Compression::None,
             /*turn_state*/ None,
+            /*debug_request_attempt_seq*/ None,
+            /*debug_transport_reason*/ None,
         )
         .await?;
 
@@ -286,6 +288,8 @@ async fn streaming_client_adds_auth_headers() -> Result<()> {
             HeaderMap::new(),
             Compression::None,
             /*turn_state*/ None,
+            /*debug_request_attempt_seq*/ None,
+            /*debug_transport_reason*/ None,
         )
         .await?;
 
@@ -368,6 +372,8 @@ async fn streaming_client_retries_on_transient_auth_error() -> Result<()> {
             HeaderMap::new(),
             Compression::None,
             /*turn_state*/ None,
+            /*debug_request_attempt_seq*/ None,
+            /*debug_transport_reason*/ None,
         )
         .await?;
 
@@ -393,6 +399,8 @@ async fn streaming_client_does_not_retry_auth_build_error() -> Result<()> {
             HeaderMap::new(),
             Compression::None,
             /*turn_state*/ None,
+            /*debug_request_attempt_seq*/ None,
+            /*debug_transport_reason*/ None,
         )
         .await;
     let err = match result {
@@ -450,6 +458,7 @@ async fn azure_default_store_attaches_ids_and_headers() -> Result<()> {
                 extra_headers,
                 compression: Compression::None,
                 turn_state: None,
+                ..Default::default()
             },
         )
         .await?;

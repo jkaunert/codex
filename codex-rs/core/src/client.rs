@@ -216,6 +216,7 @@ pub struct ModelClient {
 pub struct ModelClientSession {
     client: ModelClient,
     websocket_session: WebsocketSession,
+    http_request_attempt_seq: AtomicU64,
     /// Turn state for sticky routing.
     ///
     /// This is an `OnceLock` that stores the turn state value received from the server
@@ -348,6 +349,7 @@ impl ModelClient {
         ModelClientSession {
             client: self.clone(),
             websocket_session: self.take_cached_websocket_session(),
+            http_request_attempt_seq: AtomicU64::new(0),
             turn_state: Arc::new(OnceLock::new()),
         }
     }
@@ -396,9 +398,11 @@ impl ModelClient {
         session_telemetry: &SessionTelemetry,
         _model_info: &ModelInfo,
     ) -> bool {
+        let http_fallback_supported = self.http_fallback_supported();
         let websocket_enabled = self.responses_websocket_enabled();
-        let activated =
-            websocket_enabled && !self.state.disable_websockets.swap(true, Ordering::Relaxed);
+        let activated = http_fallback_supported
+            && websocket_enabled
+            && !self.state.disable_websockets.swap(true, Ordering::Relaxed);
         if activated {
             warn!("falling back to HTTP");
             session_telemetry.counter(
@@ -406,10 +410,34 @@ impl ModelClient {
                 /*inc*/ 1,
                 &[("from_wire_api", "responses_websocket")],
             );
+        } else if websocket_enabled && !http_fallback_supported {
+            warn!(
+                base_url = self
+                    .state
+                    .provider
+                    .info()
+                    .base_url
+                    .as_deref()
+                    .unwrap_or_default(),
+                "skipping HTTP fallback because provider base URL is not HTTP-compatible"
+            );
         }
 
         self.store_cached_websocket_session(WebsocketSession::default());
         activated
+    }
+
+    fn http_fallback_supported(&self) -> bool {
+        self.state
+            .provider
+            .info()
+            .base_url
+            .as_deref()
+            .map_or(true, |base_url| {
+                url::Url::parse(base_url)
+                    .map(|url| matches!(url.scheme(), "http" | "https"))
+                    .unwrap_or(false)
+            })
     }
 
     /// Compacts the current conversation history using the Compact endpoint.
@@ -830,6 +858,22 @@ impl Drop for ModelClientSession {
 }
 
 impl ModelClientSession {
+    fn next_http_request_attempt_seq(&self) -> u64 {
+        self.http_request_attempt_seq.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    fn http_transport_reason(&self) -> &'static str {
+        if (*CODEX_RS_SSE_FIXTURE).is_some() {
+            "sse_fixture"
+        } else if self.client.state.disable_websockets.load(Ordering::Relaxed) {
+            "websocket_fallback_active"
+        } else if !self.client.state.provider.info().supports_websockets {
+            "provider_without_websockets"
+        } else {
+            "direct_http"
+        }
+    }
+
     fn should_retry_fresh_after_partial_resume_error(
         err: &ApiError,
         partial_resume_attempt: bool,
@@ -961,6 +1005,8 @@ impl ModelClientSession {
             },
             compression,
             turn_state: Some(Arc::clone(&self.turn_state)),
+            debug_request_attempt_seq: None,
+            debug_transport_reason: None,
         }
     }
 
@@ -979,8 +1025,7 @@ impl ModelClientSession {
         if !self.request_matches_previous_without_input(request) {
             trace!(
                 "incremental request failed, properties didn't match {:?} != {:?}",
-                previous_request,
-                request
+                previous_request, request
             );
             return None;
         }
@@ -1311,7 +1356,11 @@ impl ModelClientSession {
                 self.client.state.auth_env_telemetry.clone(),
             );
             let compression = self.responses_request_compression(client_setup.auth.as_ref());
-            let options = self.build_responses_options(turn_metadata_header, compression);
+            let mut options = self.build_responses_options(turn_metadata_header, compression);
+            let http_request_attempt_seq = self.next_http_request_attempt_seq();
+            let http_transport_reason = self.http_transport_reason().to_string();
+            options.debug_request_attempt_seq = Some(http_request_attempt_seq);
+            options.debug_transport_reason = Some(http_transport_reason.clone());
 
             let request = self.build_responses_request(
                 &client_setup.api_provider,
@@ -1323,6 +1372,13 @@ impl ModelClientSession {
             )?;
             let inference_trace_attempt = inference_trace.start_attempt();
             inference_trace_attempt.record_started(&request);
+            warn!(
+                request_attempt_seq = http_request_attempt_seq,
+                transport_reason = http_transport_reason,
+                turn_state_present = self.turn_state.get().is_some(),
+                request_input_items = request.input.len(),
+                "http SSE request prepared for stream"
+            );
             let client = ApiResponsesClient::new(
                 transport,
                 client_setup.api_provider,

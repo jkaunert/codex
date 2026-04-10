@@ -11,6 +11,7 @@ use codex_app_server_protocol::AuthMode;
 use codex_model_provider::BearerAuthProvider;
 use codex_model_provider_info::WireApi;
 use codex_model_provider_info::create_oss_provider_with_base_url;
+use codex_model_provider_info::ModelProviderInfo;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ModelInfo;
@@ -27,6 +28,21 @@ fn test_model_client(session_source: SessionSource) -> ModelClient {
         /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
         provider,
         session_source,
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+    )
+}
+
+fn websocket_capable_test_model_client(base_url: Option<String>) -> ModelClient {
+    let provider = ModelProviderInfo::create_openai_provider(base_url);
+    ModelClient::new(
+        /*auth_manager*/ None,
+        ThreadId::new(),
+        /*installation_id*/ "11111111-1111-4111-8111-111111111111".to_string(),
+        provider,
+        SessionSource::Cli,
         /*model_verbosity*/ None,
         /*enable_request_compression*/ false,
         /*include_timing_metrics*/ false,
@@ -168,4 +184,26 @@ fn auth_request_telemetry_context_tracks_attached_auth_and_retry_phase() {
     assert!(auth_context.retry_after_unauthorized);
     assert_eq!(auth_context.recovery_mode, Some("managed"));
     assert_eq!(auth_context.recovery_phase, Some("refresh_token"));
+}
+
+#[test]
+fn force_http_fallback_disables_websockets_for_http_base_urls() {
+    let client = websocket_capable_test_model_client(Some("https://example.com/v1".to_string()));
+    let telemetry = test_session_telemetry();
+    let model_info = test_model_info();
+
+    assert!(client.responses_websocket_enabled());
+    assert!(client.force_http_fallback(&telemetry, &model_info));
+    assert!(!client.responses_websocket_enabled());
+}
+
+#[test]
+fn force_http_fallback_refuses_websocket_only_base_urls() {
+    let client = websocket_capable_test_model_client(Some("ws://example.com/v1".to_string()));
+    let telemetry = test_session_telemetry();
+    let model_info = test_model_info();
+
+    assert!(client.responses_websocket_enabled());
+    assert!(!client.force_http_fallback(&telemetry, &model_info));
+    assert!(client.responses_websocket_enabled());
 }
