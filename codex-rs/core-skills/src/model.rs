@@ -20,7 +20,7 @@ pub struct SkillMetadata {
 }
 
 impl SkillMetadata {
-    fn allow_implicit_invocation(&self) -> bool {
+    pub(crate) fn allow_implicit_invocation(&self) -> bool {
         self.policy
             .as_ref()
             .and_then(|policy| policy.allow_implicit_invocation)
@@ -104,6 +104,14 @@ impl SkillLoadOutcome {
         self.skills
             .iter()
             .filter(|skill| self.is_skill_allowed_for_implicit_invocation(skill))
+            .cloned()
+            .collect()
+    }
+
+    pub fn enabled_skills_for_explicit_invocation_only(&self) -> Vec<SkillMetadata> {
+        self.skills
+            .iter()
+            .filter(|skill| self.is_skill_enabled(skill) && !skill.allow_implicit_invocation())
             .cloned()
             .collect()
     }

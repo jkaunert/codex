@@ -3816,7 +3816,12 @@ impl Session {
             .turn_skills
             .outcome
             .allowed_skills_for_implicit_invocation();
-        if let Some(skills_section) = render_skills_section(&implicit_skills) {
+        let explicit_only_skills = turn_context
+            .turn_skills
+            .outcome
+            .enabled_skills_for_explicit_invocation_only();
+        if let Some(skills_section) = render_skills_section(&implicit_skills, &explicit_only_skills)
+        {
             developer_sections.push(skills_section);
         }
         let loaded_plugins = self

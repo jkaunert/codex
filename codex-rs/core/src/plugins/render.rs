@@ -25,7 +25,7 @@ pub(crate) fn render_plugins_section(plugins: &[PluginCapabilitySummary]) -> Opt
     lines.push("### How to use plugins".to_string());
     lines.push(
         r###"- Discovery: The list above is the plugins available in this session.
-- Skill naming: If a plugin contributes skills, those skill entries are prefixed with `plugin_name:` in the Skills list.
+- Skill naming: If a plugin contributes skills, those skill entries are prefixed with the plugin skill namespace (typically the plugin id before any `@marketplace` suffix) in the Skills list.
 - Trigger rules: If the user explicitly names a plugin, prefer capabilities associated with that plugin for that turn.
 - Relationship to capabilities: Plugins are not invoked directly. Use their underlying skills, MCP tools, and app tools to help solve the task.
 - Preference: When a relevant plugin is available, prefer using capabilities associated with that plugin over standalone capabilities that provide similar functionality.
@@ -50,10 +50,13 @@ pub(crate) fn render_explicit_plugin_instructions(
     )];
 
     if plugin.has_skills {
-        lines.push(format!(
-            "- Skills from this plugin are prefixed with `{}:`.",
-            plugin.display_name
-        ));
+        if let Some(namespace) = plugin_skill_namespace(plugin) {
+            lines.push(format!(
+                "- Skills from this plugin are prefixed with `{namespace}:` in the Skills list."
+            ));
+        } else {
+            lines.push("- Skills from this plugin are available in the Skills list.".to_string());
+        }
     }
 
     if !available_mcp_servers.is_empty() {
@@ -85,6 +88,13 @@ pub(crate) fn render_explicit_plugin_instructions(
     lines.push("Use these plugin-associated capabilities to help solve the task.".to_string());
 
     Some(lines.join("\n"))
+}
+
+fn plugin_skill_namespace(plugin: &PluginCapabilitySummary) -> Option<&str> {
+    plugin.config_name.split_once('@').map_or_else(
+        || (!plugin.config_name.is_empty()).then_some(plugin.config_name.as_str()),
+        |(plugin_name, _)| (!plugin_name.is_empty()).then_some(plugin_name),
+    )
 }
 
 #[cfg(test)]

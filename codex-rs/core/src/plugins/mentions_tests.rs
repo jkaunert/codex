@@ -108,6 +108,32 @@ fn collect_explicit_plugin_mentions_from_linked_text_mentions() {
 }
 
 #[test]
+fn collect_explicit_plugin_mentions_from_plain_text_config_name() {
+    let plugins = vec![
+        plugin("sample@test", "sample"),
+        plugin("other@test", "other"),
+    ];
+
+    let mentioned =
+        collect_explicit_plugin_mentions(&[text_input("use sample@test for this task")], &plugins);
+
+    assert_eq!(mentioned, vec![plugin("sample@test", "sample")]);
+}
+
+#[test]
+fn collect_explicit_plugin_mentions_from_plain_text_display_name() {
+    let plugins = vec![
+        plugin("sample@test", "sample"),
+        plugin("other@test", "other"),
+    ];
+
+    let mentioned =
+        collect_explicit_plugin_mentions(&[text_input("use sample for this task")], &plugins);
+
+    assert_eq!(mentioned, vec![plugin("sample@test", "sample")]);
+}
+
+#[test]
 fn collect_explicit_plugin_mentions_dedupes_structured_and_linked_mentions() {
     let plugins = vec![
         plugin("sample@test", "sample"),
@@ -150,6 +176,19 @@ fn collect_explicit_plugin_mentions_ignores_dollar_linked_plugin_mentions() {
         &[text_input("use [$sample](plugin://sample@test)")],
         &plugins,
     );
+
+    assert_eq!(mentioned, Vec::<PluginCapabilitySummary>::new());
+}
+
+#[test]
+fn collect_explicit_plugin_mentions_skips_ambiguous_plain_text_display_name() {
+    let plugins = vec![
+        plugin("sample@test", "sample"),
+        plugin("sample@other", "sample"),
+    ];
+
+    let mentioned =
+        collect_explicit_plugin_mentions(&[text_input("use sample for this task")], &plugins);
 
     assert_eq!(mentioned, Vec::<PluginCapabilitySummary>::new());
 }

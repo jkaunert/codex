@@ -8,6 +8,7 @@ use crate::injection::ToolMentionKind;
 use crate::injection::app_id_from_path;
 use crate::injection::extract_tool_mentions_with_sigil;
 use crate::injection::plugin_config_name_from_path;
+use crate::injection::text_mentions_plain_name;
 use crate::injection::tool_kind_for_path;
 use crate::mention_syntax::PLUGIN_TEXT_MENTION_SIGIL;
 use crate::mention_syntax::TOOL_MENTION_SIGIL;
@@ -58,7 +59,7 @@ pub(crate) fn collect_explicit_app_ids(input: &[UserInput]) -> HashSet<String> {
         .collect()
 }
 
-/// Collect explicit structured or linked `plugin://...` mentions.
+/// Collect explicit structured, linked, or plain-text plugin mentions.
 pub(crate) fn collect_explicit_plugin_mentions(
     input: &[UserInput],
     plugins: &[PluginCapabilitySummary],
@@ -90,13 +91,24 @@ pub(crate) fn collect_explicit_plugin_mentions(
         .filter_map(|path| plugin_config_name_from_path(path.as_str()).map(str::to_string))
         .collect();
 
-    if mentioned_config_names.is_empty() {
-        return Vec::new();
-    }
+    let plain_text_name_counts = build_plain_text_plugin_name_counts(plugins);
 
     plugins
         .iter()
-        .filter(|plugin| mentioned_config_names.contains(plugin.config_name.as_str()))
+        .filter(|plugin| {
+            if mentioned_config_names.contains(plugin.config_name.as_str()) {
+                return true;
+            }
+
+            let Some(matched_name) = plugin_plain_text_match_name(plugin, &messages) else {
+                return false;
+            };
+            plain_text_name_counts
+                .get(matched_name)
+                .copied()
+                .unwrap_or(0)
+                == 1
+        })
         .cloned()
         .collect()
 }
@@ -112,6 +124,34 @@ pub(crate) fn build_connector_slug_counts(
         *counts.entry(slug).or_insert(0) += 1;
     }
     counts
+}
+
+fn build_plain_text_plugin_name_counts(
+    plugins: &[PluginCapabilitySummary],
+) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    for plugin in plugins {
+        *counts.entry(plugin.config_name.clone()).or_insert(0) += 1;
+        *counts.entry(plugin.display_name.clone()).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn plugin_plain_text_match_name<'a>(
+    plugin: &'a PluginCapabilitySummary,
+    messages: &[String],
+) -> Option<&'a str> {
+    if messages
+        .iter()
+        .any(|message| text_mentions_plain_name(message, plugin.config_name.as_str()))
+    {
+        return Some(plugin.config_name.as_str());
+    }
+
+    messages
+        .iter()
+        .any(|message| text_mentions_plain_name(message, plugin.display_name.as_str()))
+        .then_some(plugin.display_name.as_str())
 }
 
 #[cfg(test)]
