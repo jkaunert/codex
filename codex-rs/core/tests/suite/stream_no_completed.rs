@@ -219,6 +219,7 @@ async fn retries_when_stream_idles_after_commentary_before_completed() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -311,6 +312,7 @@ async fn retries_rebuild_prompt_from_history_after_commentary_only_interruption(
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -412,6 +414,7 @@ async fn retries_rebuild_prompt_from_history_after_commentary_delta_only_interru
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -510,6 +513,7 @@ async fn fails_fast_after_repeated_commentary_only_retries_without_progress() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -607,6 +611,7 @@ async fn fails_fast_after_repeated_commentary_plus_reasoning_retries_without_pro
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -715,6 +720,7 @@ async fn resets_no_progress_loop_when_retry_branch_improves_to_visible_commentar
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -776,6 +782,7 @@ async fn websocket_retries_degrade_from_incremental_to_fresh_after_partial_progr
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
@@ -879,6 +886,7 @@ async fn fails_fast_after_repeated_visible_heading_output_without_completion() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
