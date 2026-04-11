@@ -228,6 +228,7 @@ pub struct ModelClientSession {
 struct LastResponse {
     response_id: String,
     items_added: Vec<ResponseItem>,
+    completed: bool,
 }
 
 #[derive(Debug, Default)]
@@ -252,6 +253,11 @@ impl WebsocketSession {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+}
+
+struct PreparedWebsocketRequest {
+    request: ResponsesWsRequest,
+    partial_resume_attempt: bool,
 }
 
 enum WebsocketStreamOutcome {
@@ -808,12 +814,33 @@ impl Drop for ModelClientSession {
 }
 
 impl ModelClientSession {
+    fn should_retry_fresh_after_partial_resume_error(
+        err: &ApiError,
+        partial_resume_attempt: bool,
+    ) -> bool {
+        if !partial_resume_attempt {
+            return false;
+        }
+        matches!(
+            err,
+            ApiError::Transport(TransportError::Http {
+                status,
+                body: Some(body),
+                ..
+            }) if *status == StatusCode::BAD_REQUEST && body.contains("previous_response_not_found")
+        )
+    }
+
     pub(crate) fn reset_websocket_session(&mut self) {
         self.websocket_session.connection = None;
         self.websocket_session.last_request = None;
         self.websocket_session.last_response_rx = None;
         self.websocket_session
             .set_connection_reused(/*connection_reused*/ false);
+    }
+
+    pub(crate) fn clear_partial_resume_state(&mut self) {
+        self.websocket_session.last_response_rx = None;
     }
 
     fn build_responses_request(
@@ -929,13 +956,11 @@ impl ModelClientSession {
         // extension of the previous known input. Server-returned output items are treated as part
         // of the baseline so we do not resend them.
         let previous_request = self.websocket_session.last_request.as_ref()?;
-        let mut previous_without_input = previous_request.clone();
-        previous_without_input.input.clear();
-        let mut request_without_input = request.clone();
-        request_without_input.input.clear();
-        if previous_without_input != request_without_input {
+        if !self.request_matches_previous_without_input(request) {
             trace!(
-                "incremental request failed, properties didn't match {previous_without_input:?} != {request_without_input:?}"
+                "incremental request failed, properties didn't match {:?} != {:?}",
+                previous_request,
+                request
             );
             return None;
         }
@@ -956,42 +981,91 @@ impl ModelClientSession {
         }
     }
 
+    fn request_matches_previous_without_input(&self, request: &ResponsesApiRequest) -> bool {
+        let Some(previous_request) = self.websocket_session.last_request.as_ref() else {
+            return false;
+        };
+        let mut previous_without_input = previous_request.clone();
+        previous_without_input.input.clear();
+        let mut request_without_input = request.clone();
+        request_without_input.input.clear();
+        previous_without_input == request_without_input
+    }
+
     fn get_last_response(&mut self) -> Option<LastResponse> {
-        self.websocket_session
-            .last_response_rx
-            .take()
-            .and_then(|mut receiver| match receiver.try_recv() {
-                Ok(last_response) => Some(last_response),
-                Err(TryRecvError::Closed) | Err(TryRecvError::Empty) => None,
-            })
+        let mut receiver = self.websocket_session.last_response_rx.take()?;
+        match receiver.try_recv() {
+            Ok(last_response) => Some(last_response),
+            Err(TryRecvError::Closed) => None,
+            Err(TryRecvError::Empty) => {
+                self.websocket_session.last_response_rx = Some(receiver);
+                None
+            }
+        }
     }
 
     fn prepare_websocket_request(
         &mut self,
         payload: ResponseCreateWsRequest,
         request: &ResponsesApiRequest,
-    ) -> ResponsesWsRequest {
+    ) -> PreparedWebsocketRequest {
         let Some(last_response) = self.get_last_response() else {
-            return ResponsesWsRequest::ResponseCreate(payload);
+            return PreparedWebsocketRequest {
+                request: ResponsesWsRequest::ResponseCreate(payload),
+                partial_resume_attempt: false,
+            };
         };
+
+        if !last_response.completed
+            && !last_response.items_added.is_empty()
+            && self.request_matches_previous_without_input(request)
+            && self
+                .websocket_session
+                .last_request
+                .as_ref()
+                .is_some_and(|previous_request| previous_request.input == request.input)
+        {
+            if last_response.response_id.is_empty() {
+                trace!("partial retry reuse failed, no previous response id");
+            } else {
+                return PreparedWebsocketRequest {
+                    request: ResponsesWsRequest::ResponseCreate(ResponseCreateWsRequest {
+                        previous_response_id: Some(last_response.response_id),
+                        input: Vec::new(),
+                        ..payload
+                    }),
+                    partial_resume_attempt: true,
+                };
+            }
+        }
+
         let Some(incremental_items) = self.get_incremental_items(
             request,
             Some(&last_response),
             /*allow_empty_delta*/ true,
         ) else {
-            return ResponsesWsRequest::ResponseCreate(payload);
+            return PreparedWebsocketRequest {
+                request: ResponsesWsRequest::ResponseCreate(payload),
+                partial_resume_attempt: false,
+            };
         };
 
         if last_response.response_id.is_empty() {
             trace!("incremental request failed, no previous response id");
-            return ResponsesWsRequest::ResponseCreate(payload);
+            return PreparedWebsocketRequest {
+                request: ResponsesWsRequest::ResponseCreate(payload),
+                partial_resume_attempt: false,
+            };
         }
 
-        ResponsesWsRequest::ResponseCreate(ResponseCreateWsRequest {
-            previous_response_id: Some(last_response.response_id),
-            input: incremental_items,
-            ..payload
-        })
+        PreparedWebsocketRequest {
+            request: ResponsesWsRequest::ResponseCreate(ResponseCreateWsRequest {
+                previous_response_id: Some(last_response.response_id),
+                input: incremental_items,
+                ..payload
+            }),
+            partial_resume_attempt: false,
+        }
     }
 
     /// Opportunistically preconnects a websocket for this turn-scoped client session.
@@ -1068,8 +1142,6 @@ impl ModelClientSession {
         };
 
         if needs_new {
-            self.websocket_session.last_request = None;
-            self.websocket_session.last_response_rx = None;
             let turn_state = options
                 .turn_state
                 .clone()
@@ -1255,6 +1327,7 @@ impl ModelClientSession {
             .as_ref()
             .map(AuthManager::unauthorized_recovery);
         let mut pending_retry = PendingUnauthorizedRetry::default();
+        let mut attempted_partial_resume_fallback = false;
         loop {
             let client_setup = self.client.current_client_setup().await?;
             let request_auth_context = AuthRequestTelemetryContext::new(
@@ -1320,17 +1393,34 @@ impl ModelClientSession {
                 Err(err) => return Err(map_api_error(err)),
             }
 
-            let ws_request = self.prepare_websocket_request(ws_payload, &request);
+            let prepared_request = self.prepare_websocket_request(ws_payload, &request);
             self.websocket_session.last_request = Some(request);
             let stream_result = self.websocket_session.connection.as_ref().ok_or_else(|| {
                 map_api_error(ApiError::Stream(
                     "websocket connection is unavailable".to_string(),
                 ))
             })?;
-            let stream_result = stream_result
-                .stream_request(ws_request, self.websocket_session.connection_reused())
+            let stream_result = match stream_result
+                .stream_request(
+                    prepared_request.request,
+                    self.websocket_session.connection_reused(),
+                )
                 .await
-                .map_err(map_api_error)?;
+            {
+                Ok(stream_result) => stream_result,
+                Err(err)
+                    if !attempted_partial_resume_fallback
+                        && Self::should_retry_fresh_after_partial_resume_error(
+                            &err,
+                            prepared_request.partial_resume_attempt,
+                        ) =>
+                {
+                    attempted_partial_resume_fallback = true;
+                    self.websocket_session.last_response_rx = None;
+                    continue;
+                }
+                Err(err) => return Err(map_api_error(err)),
+            };
             let (stream, last_request_rx) =
                 map_response_stream(stream_result, session_telemetry.clone());
             self.websocket_session.last_response_rx = Some(last_request_rx);
@@ -1581,12 +1671,47 @@ where
     let (tx_last_response, rx_last_response) = oneshot::channel::<LastResponse>();
 
     tokio::spawn(async move {
+        let send_last_response = |sender: &mut Option<oneshot::Sender<LastResponse>>,
+                                  response_id: &Option<String>,
+                                  items_added: &mut Vec<ResponseItem>,
+                                  completed: bool| {
+            let Some(response_id) = response_id.clone() else {
+                return;
+            };
+            if response_id.is_empty() || (!completed && items_added.is_empty()) {
+                return;
+            }
+            if let Some(sender) = sender.take() {
+                let _ = sender.send(LastResponse {
+                    response_id,
+                    items_added: std::mem::take(items_added),
+                    completed,
+                });
+            }
+        };
         let mut logged_error = false;
         let mut tx_last_response = Some(tx_last_response);
         let mut items_added: Vec<ResponseItem> = Vec::new();
+        let mut response_id: Option<String> = None;
         let mut api_stream = api_stream;
         while let Some(event) = api_stream.next().await {
             match event {
+                Ok(ResponseEvent::Created {
+                    response_id: created_response_id,
+                }) => {
+                    if created_response_id.is_some() {
+                        response_id = created_response_id.clone();
+                    }
+                    if tx_event
+                        .send(Ok(ResponseEvent::Created {
+                            response_id: created_response_id,
+                        }))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
                 Ok(ResponseEvent::OutputItemDone(item)) => {
                     items_added.push(item.clone());
                     if tx_event
@@ -1598,9 +1723,10 @@ where
                     }
                 }
                 Ok(ResponseEvent::Completed {
-                    response_id,
+                    response_id: completed_response_id,
                     token_usage,
                 }) => {
+                    response_id = Some(completed_response_id.clone());
                     if let Some(usage) = &token_usage {
                         session_telemetry.sse_event_completed(
                             usage.input_tokens,
@@ -1610,15 +1736,15 @@ where
                             usage.total_tokens,
                         );
                     }
-                    if let Some(sender) = tx_last_response.take() {
-                        let _ = sender.send(LastResponse {
-                            response_id: response_id.clone(),
-                            items_added: std::mem::take(&mut items_added),
-                        });
-                    }
+                    send_last_response(
+                        &mut tx_last_response,
+                        &response_id,
+                        &mut items_added,
+                        /*completed*/ true,
+                    );
                     if tx_event
                         .send(Ok(ResponseEvent::Completed {
-                            response_id,
+                            response_id: completed_response_id,
                             token_usage,
                         }))
                         .await
@@ -1633,6 +1759,12 @@ where
                     }
                 }
                 Err(err) => {
+                    send_last_response(
+                        &mut tx_last_response,
+                        &response_id,
+                        &mut items_added,
+                        /*completed*/ false,
+                    );
                     let mapped = map_api_error(err);
                     if !logged_error {
                         session_telemetry.see_event_completed_failed(&mapped);
@@ -1644,6 +1776,12 @@ where
                 }
             }
         }
+        send_last_response(
+            &mut tx_last_response,
+            &response_id,
+            &mut items_added,
+            /*completed*/ false,
+        );
     });
 
     (ResponseStream { rx_event }, rx_last_response)

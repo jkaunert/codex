@@ -575,17 +575,13 @@ async fn run_websocket_response_stream(
         }
         let message = match response {
             Ok(Some(Ok(msg))) => msg,
-            Ok(Some(Err(err))) => {
-                return Err(ApiError::Stream(err.to_string()));
-            }
+            Ok(Some(Err(err))) => return Err(ApiError::Stream(err.to_string())),
             Ok(None) => {
                 return Err(ApiError::Stream(
                     "stream closed before response.completed".into(),
                 ));
             }
-            Err(err) => {
-                return Err(err);
-            }
+            Err(err) => return Err(err),
         };
 
         match message {

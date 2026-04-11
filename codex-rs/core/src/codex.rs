@@ -6907,12 +6907,41 @@ async fn run_sampling_request(
             last_visible_message_across_no_progress_retries = None;
         }
 
+        // Use the configured provider-specific stream retry budget.
+        let max_retries = turn_context.provider.stream_max_retries();
+        if matches!(&err, CodexErr::InvalidRequest(message) if message.contains("previous_response_not_found")) {
+            if retries >= max_retries
+                && client_session.try_switch_fallback_transport(
+                    &turn_context.session_telemetry,
+                    &turn_context.model_info,
+                )
+            {
+                sess.send_event(
+                    &turn_context,
+                    EventMsg::Warning(WarningEvent {
+                        message: "Falling back from WebSockets to HTTPS transport after partial-resume rejection.".to_string(),
+                    }),
+                )
+                .await;
+                client_session.clear_partial_resume_state();
+                retries = 0;
+                continue;
+            }
+            if retries < max_retries {
+                warn!(
+                    "provider rejected websocket partial-resume request; clearing continuation state and retrying fresh"
+                );
+                client_session.clear_partial_resume_state();
+                retries += 1;
+                continue;
+            }
+            return Err(err);
+        }
+
         if !err.is_retryable() {
             return Err(err);
         }
 
-        // Use the configured provider-specific stream retry budget.
-        let max_retries = turn_context.provider.stream_max_retries();
         if retries >= max_retries
             && client_session.try_switch_fallback_transport(
                 &turn_context.session_telemetry,
@@ -7925,7 +7954,7 @@ async fn try_run_sampling_request(
         record_turn_ttft_metric(&turn_context, &event).await;
 
         match event {
-            ResponseEvent::Created => {}
+            ResponseEvent::Created { .. } => {}
             ResponseEvent::OutputItemDone(item) => {
                 attempt_progress.note_output_item_done(&item);
                 let previously_active_item = active_item.take();

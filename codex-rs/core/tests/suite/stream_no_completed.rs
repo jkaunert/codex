@@ -743,7 +743,7 @@ async fn resets_no_progress_loop_when_retry_branch_improves_to_visible_commentar
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn websocket_retries_degrade_from_incremental_to_fresh_after_partial_progress() {
+async fn websocket_first_reconnect_reuses_partial_response_id_after_partial_progress() {
     skip_if_no_network!();
 
     let first_connection = vec![
@@ -834,13 +834,83 @@ async fn websocket_retries_degrade_from_incremental_to_fresh_after_partial_progr
     let retry_one = connections[1][0].body_json();
     let retry_two = connections[2][0].body_json();
     assert!(
-        retry_one["previous_response_id"].is_null(),
-        "expected first reconnect to degrade to a fresh request: {retry_one}"
+        retry_one["previous_response_id"].as_str() == Some("resp-1"),
+        "expected first reconnect to reuse the partial response id: {retry_one}"
     );
-    assert!(
-        retry_two["previous_response_id"].is_null(),
-        "expected second reconnect to degrade to a fresh request: {retry_two}"
-    );
+    assert_eq!(retry_one["input"], serde_json::json!([]));
+    assert_eq!(retry_two["type"].as_str(), Some("response.create"));
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn websocket_partial_resume_rejection_retries_fresh() {
+    skip_if_no_network!();
+
+    let first_connection = vec![
+        vec![ev_response_created("resp-warm"), ev_completed("resp-warm")],
+        vec![
+            ev_response_created("resp-1"),
+            ev_message_item_added("msg-1", ""),
+            ev_output_text_delta("Routing: orchestrator-led"),
+            ev_commentary_message_item_done("msg-1", "Routing: orchestrator-led"),
+        ],
+    ];
+    let previous_response_not_found = vec![json!({
+        "type": "error",
+        "status": 400,
+        "error": {
+            "type": "invalid_request_error",
+            "code": "previous_response_not_found",
+            "message": "Previous response with id 'resp-1' not found."
+        }
+    })];
+    let fresh_retry = vec![
+        ev_response_created("resp-ok"),
+        ev_message_item_added("msg-ok", ""),
+        ev_output_text_delta("final after fresh retry"),
+        ev_message_item_done("msg-ok", "final after fresh retry"),
+        ev_completed("resp-ok"),
+    ];
+    let server = start_websocket_server(vec![
+        first_connection,
+        vec![previous_response_not_found],
+        vec![fresh_retry],
+    ])
+    .await;
+
+    let mut builder = test_codex().with_config(|config| {
+        config.model_provider.request_max_retries = Some(0);
+        config.model_provider.stream_max_retries = Some(5);
+        config.model_provider.stream_idle_timeout_ms = Some(50);
+    });
+    let TestCodex { codex, .. } = builder.build_with_websocket_server(&server).await.unwrap();
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+        })
+        .await
+        .unwrap();
+
+    wait_for_event(
+        &codex,
+        |event| matches!(event, EventMsg::AgentMessage(message) if message.message == "final after fresh retry"),
+    )
+    .await;
+
+    let connections = server.connections();
+    assert_eq!(connections.len(), 3);
+    let partial_resume = connections[1][0].body_json();
+    let fresh_fallback = connections[2][0].body_json();
+
+    assert_eq!(partial_resume["previous_response_id"].as_str(), Some("resp-1"));
+    assert_eq!(partial_resume["input"], serde_json::json!([]));
+    assert!(fresh_fallback["previous_response_id"].is_null());
 
     server.shutdown().await;
 }
