@@ -893,6 +893,7 @@ async fn websocket_partial_resume_rejection_retries_fresh() {
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await
         .unwrap();
