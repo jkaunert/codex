@@ -6771,7 +6771,7 @@ async fn run_sampling_request(
     turn_diff_tracker: SharedTurnDiffTracker,
     client_session: &mut ModelClientSession,
     turn_metadata_header: Option<&str>,
-    input: Vec<ResponseItem>,
+    initial_input: Vec<ResponseItem>,
     explicitly_enabled_connectors: &HashSet<String>,
     skills_outcome: Option<&SkillLoadOutcome>,
     server_model_warning_emitted_for_turn: &mut bool,
@@ -6780,21 +6780,12 @@ async fn run_sampling_request(
     let router = built_tools(
         sess.as_ref(),
         turn_context.as_ref(),
-        &input,
+        &initial_input,
         explicitly_enabled_connectors,
         skills_outcome,
         &cancellation_token,
     )
     .await?;
-
-    let base_instructions = sess.get_base_instructions().await;
-
-    let prompt = build_prompt(
-        input,
-        router.as_ref(),
-        turn_context.as_ref(),
-        base_instructions,
-    );
     let tool_runtime = ToolCallRuntime::new(
         Arc::clone(&router),
         Arc::clone(&sess),
@@ -6812,8 +6803,24 @@ async fn run_sampling_request(
         )
         .await;
     let mut retries = 0;
+    let mut consecutive_no_progress_retries = 0;
+    let mut last_visible_message_across_no_progress_retries: Option<String> = None;
+    let mut last_no_progress_retry_tier: Option<NoProgressRetryTier> = None;
     loop {
-        let err = match try_run_sampling_request(
+        let prompt_input = if retries == 0 {
+            initial_input.clone()
+        } else {
+            sess.clone_history()
+                .await
+                .for_prompt(&turn_context.model_info.input_modalities)
+        };
+        let prompt = build_prompt(
+            prompt_input,
+            router.as_ref(),
+            turn_context.as_ref(),
+            sess.get_base_instructions().await,
+        );
+        let (err, stream_progress) = match try_run_sampling_request(
             tool_runtime.clone(),
             Arc::clone(&sess),
             Arc::clone(&turn_context),
@@ -6829,19 +6836,76 @@ async fn run_sampling_request(
             Ok(output) => {
                 return Ok(output);
             }
-            Err(CodexErr::ContextWindowExceeded) => {
+            Err(SamplingRequestError::StreamInterrupted { source, progress }) => {
+                (source, Some(progress))
+            }
+            Err(SamplingRequestError::Codex(CodexErr::ContextWindowExceeded)) => {
                 sess.set_total_tokens_full(&turn_context).await;
                 return Err(CodexErr::ContextWindowExceeded);
             }
-            Err(CodexErr::UsageLimitReached(e)) => {
+            Err(SamplingRequestError::Codex(CodexErr::UsageLimitReached(e))) => {
                 let rate_limits = e.rate_limits.clone();
                 if let Some(rate_limits) = rate_limits {
                     sess.update_rate_limits(&turn_context, *rate_limits).await;
                 }
                 return Err(CodexErr::UsageLimitReached(e));
             }
-            Err(err) => err,
+            Err(SamplingRequestError::Codex(err)) => (err, None),
         };
+
+        if let Some(progress) = stream_progress.as_ref() {
+            if progress.has_no_substantive_progress()
+                && let Some(partial_item) = progress.partial_assistant_retry_item()
+            {
+                sess.record_conversation_items(&turn_context, std::slice::from_ref(&partial_item))
+                    .await;
+            }
+            if progress.has_no_substantive_progress() {
+                let no_progress_retry_tier = progress.no_progress_retry_tier();
+                let reset_no_progress_counter = matches!(
+                    (last_no_progress_retry_tier, no_progress_retry_tier),
+                    (Some(NoProgressRetryTier::Empty), NoProgressRetryTier::VisibleOnly)
+                );
+                if consecutive_no_progress_retries == 0 || reset_no_progress_counter {
+                    consecutive_no_progress_retries = 1;
+                } else {
+                    consecutive_no_progress_retries += 1;
+                }
+                last_no_progress_retry_tier = Some(no_progress_retry_tier);
+                if let Some(message) = progress.last_visible_assistant_message() {
+                    last_visible_message_across_no_progress_retries = Some(message.to_string());
+                }
+                if consecutive_no_progress_retries >= NO_PROGRESS_RETRY_LOOP_THRESHOLD {
+                    let last_message = last_visible_message_across_no_progress_retries
+                        .clone()
+                        .or_else(|| progress.last_visible_assistant_message().map(str::to_string))
+                        .unwrap_or_else(|| "no assistant message emitted".to_string());
+                    return Err(
+                        if last_visible_message_across_no_progress_retries.is_some()
+                            || matches!(no_progress_retry_tier, NoProgressRetryTier::VisibleOnly)
+                        {
+                            CodexErr::RepeatedVisibleOutputWithoutCompletion {
+                                retries: consecutive_no_progress_retries,
+                                last_message,
+                            }
+                        } else {
+                            CodexErr::RepeatedNoProgressWithoutCompletion {
+                                retries: consecutive_no_progress_retries,
+                                last_message,
+                            }
+                        },
+                    );
+                }
+            } else {
+                consecutive_no_progress_retries = 0;
+                last_no_progress_retry_tier = None;
+                last_visible_message_across_no_progress_retries = None;
+            }
+        } else {
+            consecutive_no_progress_retries = 0;
+            last_no_progress_retry_tier = None;
+            last_visible_message_across_no_progress_retries = None;
+        }
 
         if !err.is_retryable() {
             return Err(err);
@@ -7009,6 +7073,162 @@ pub(crate) async fn built_tools(
 struct SamplingRequestResult {
     needs_follow_up: bool,
     last_agent_message: Option<String>,
+}
+
+const NO_PROGRESS_RETRY_LOOP_THRESHOLD: usize = 3;
+
+#[derive(Clone, Debug, Default)]
+struct SamplingAttemptProgress {
+    commentary_message_count: usize,
+    substantive_output_count: usize,
+    tool_future_count: usize,
+    substantive_kinds: Vec<&'static str>,
+    last_agent_message: Option<String>,
+    partial_assistant_phase: Option<MessagePhase>,
+    partial_assistant_text: String,
+    output_item_added: bool,
+    output_item_done: bool,
+    output_text_delta: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NoProgressRetryTier {
+    Empty,
+    VisibleOnly,
+}
+
+impl SamplingAttemptProgress {
+    fn note_output_item_added(&mut self, item: &ResponseItem) {
+        self.output_item_added = true;
+        if let ResponseItem::Message { role, phase, .. } = item
+            && role == "assistant"
+        {
+            self.partial_assistant_phase = phase.clone();
+        }
+    }
+
+    fn note_output_item_done(&mut self, item: &ResponseItem) {
+        self.output_item_done = true;
+        match item {
+            ResponseItem::Message { role, phase, .. }
+                if role == "assistant" && matches!(phase, Some(MessagePhase::Commentary)) =>
+            {
+                self.commentary_message_count += 1;
+                self.partial_assistant_phase = None;
+                self.partial_assistant_text.clear();
+            }
+            ResponseItem::Message { role, .. } if role == "assistant" => {
+                self.substantive_output_count += 1;
+                self.substantive_kinds.push("assistant_message");
+                self.partial_assistant_phase = None;
+                self.partial_assistant_text.clear();
+            }
+            ResponseItem::Reasoning { .. } => {}
+            ResponseItem::LocalShellCall { .. } => self.note_substantive_kind("local_shell_call"),
+            ResponseItem::FunctionCall { .. } => self.note_substantive_kind("function_call"),
+            ResponseItem::ToolSearchCall { .. } => self.note_substantive_kind("tool_search_call"),
+            ResponseItem::FunctionCallOutput { .. } => {
+                self.note_substantive_kind("function_call_output")
+            }
+            ResponseItem::CustomToolCall { .. } => self.note_substantive_kind("custom_tool_call"),
+            ResponseItem::CustomToolCallOutput { .. } => {
+                self.note_substantive_kind("custom_tool_call_output")
+            }
+            ResponseItem::ToolSearchOutput { .. } => {
+                self.note_substantive_kind("tool_search_output")
+            }
+            ResponseItem::WebSearchCall { .. } => self.note_substantive_kind("web_search_call"),
+            ResponseItem::ImageGenerationCall { .. } => {
+                self.note_substantive_kind("image_generation_call")
+            }
+            ResponseItem::GhostSnapshot { .. } => self.note_substantive_kind("ghost_snapshot"),
+            ResponseItem::Compaction { .. } => self.note_substantive_kind("compaction"),
+            ResponseItem::Other => self.note_substantive_kind("other"),
+            ResponseItem::Message { .. } => {}
+        }
+    }
+
+    fn note_streamed_assistant_text(&mut self, visible_text: &str) {
+        if visible_text.is_empty() {
+            return;
+        }
+        self.output_text_delta = true;
+        self.partial_assistant_text.push_str(visible_text);
+        self.last_agent_message = Some(self.partial_assistant_text.clone());
+    }
+
+    fn note_tool_future(&mut self) {
+        self.tool_future_count += 1;
+    }
+
+    fn note_substantive_kind(&mut self, kind: &'static str) {
+        self.substantive_output_count += 1;
+        self.substantive_kinds.push(kind);
+    }
+
+    fn has_no_substantive_progress(&self) -> bool {
+        self.substantive_output_count == 0 && self.tool_future_count == 0
+    }
+
+    fn has_durable_visible_output(&self) -> bool {
+        self.output_item_done
+            || self.output_text_delta
+            || self.last_visible_assistant_message().is_some()
+    }
+
+    fn no_progress_retry_tier(&self) -> NoProgressRetryTier {
+        if self.has_durable_visible_output() {
+            NoProgressRetryTier::VisibleOnly
+        } else {
+            NoProgressRetryTier::Empty
+        }
+    }
+
+    fn last_visible_assistant_message(&self) -> Option<&str> {
+        self.last_agent_message
+            .as_deref()
+            .filter(|text| !text.trim().is_empty())
+            .or_else(|| {
+                (!self.partial_assistant_text.trim().is_empty())
+                    .then_some(self.partial_assistant_text.as_str())
+            })
+    }
+
+    fn partial_assistant_retry_item(&self) -> Option<ResponseItem> {
+        if self.partial_assistant_text.trim().is_empty() {
+            return None;
+        }
+        Some(ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: self.partial_assistant_text.clone(),
+            }],
+            end_turn: None,
+            phase: self.partial_assistant_phase.clone(),
+        })
+    }
+}
+
+#[derive(Debug)]
+enum SamplingRequestError {
+    Codex(CodexErr),
+    StreamInterrupted {
+        source: CodexErr,
+        progress: SamplingAttemptProgress,
+    },
+}
+
+impl From<CodexErr> for SamplingRequestError {
+    fn from(value: CodexErr) -> Self {
+        Self::Codex(value)
+    }
+}
+
+impl From<codex_async_utils::CancelErr> for SamplingRequestError {
+    fn from(_: codex_async_utils::CancelErr) -> Self {
+        Self::Codex(CodexErr::TurnAborted)
+    }
 }
 
 /// Ephemeral per-response state for streaming a single proposed plan.
@@ -7567,7 +7787,7 @@ async fn try_run_sampling_request(
     server_model_warning_emitted_for_turn: &mut bool,
     prompt: &Prompt,
     cancellation_token: CancellationToken,
-) -> CodexResult<SamplingRequestResult> {
+) -> Result<SamplingRequestResult, SamplingRequestError> {
     feedback_tags!(
         model = turn_context.model_info.slug.clone(),
         approval_policy = turn_context.approval_policy.value(),
@@ -7593,13 +7813,25 @@ async fn try_run_sampling_request(
         FuturesOrdered::new();
     let mut needs_follow_up = false;
     let mut last_agent_message: Option<String> = None;
+    let mut attempt_progress = SamplingAttemptProgress::default();
     let mut active_item: Option<TurnItem> = None;
     let mut should_emit_turn_diff = false;
     let plan_mode = turn_context.collaboration_mode.mode == ModeKind::Plan;
     let mut assistant_message_stream_parsers = AssistantMessageStreamParsers::new(plan_mode);
     let mut plan_mode_state = plan_mode.then(|| PlanModeStreamState::new(&turn_context.sub_id));
     let receiving_span = trace_span!("receiving_stream");
-    let outcome: CodexResult<SamplingRequestResult> = loop {
+    let wrap_stream_error =
+        |source: CodexErr, progress: &SamplingAttemptProgress| -> SamplingRequestError {
+            if source.is_retryable() && progress.has_no_substantive_progress() {
+                SamplingRequestError::StreamInterrupted {
+                    source,
+                    progress: progress.clone(),
+                }
+            } else {
+                SamplingRequestError::Codex(source)
+            }
+        };
+    let outcome: Result<SamplingRequestResult, SamplingRequestError> = loop {
         let handle_responses = trace_span!(
             parent: &receiving_span,
             "handle_responses",
@@ -7616,15 +7848,20 @@ async fn try_run_sampling_request(
                 .await
             {
                 Ok(event) => event,
-                Err(codex_async_utils::CancelErr::Cancelled) => break Err(CodexErr::TurnAborted),
+                Err(codex_async_utils::CancelErr::Cancelled) => {
+                    break Err(SamplingRequestError::Codex(CodexErr::TurnAborted));
+                }
             };
 
             match event {
-                Some(res) => res?,
+                Some(res) => match res {
+                    Ok(event) => event,
+                    Err(err) => break Err(wrap_stream_error(err, &attempt_progress)),
+                },
                 None => {
-                    break Err(CodexErr::Stream(
-                        "stream closed before response.completed".into(),
-                        None,
+                    break Err(wrap_stream_error(
+                        CodexErr::Stream("stream closed before response.completed".into(), None),
+                        &attempt_progress,
                     ));
                 }
             }
@@ -7659,16 +7896,22 @@ async fn try_run_sampling_request(
                     let event = match event {
                         Ok(event) => event,
                         Err(codex_async_utils::CancelErr::Cancelled) => {
-                            break Err(CodexErr::TurnAborted)
+                            break Err(SamplingRequestError::Codex(CodexErr::TurnAborted))
                         }
                     };
 
                     match event {
-                        Some(res) => res?,
+                        Some(res) => match res {
+                            Ok(event) => event,
+                            Err(err) => break Err(wrap_stream_error(err, &attempt_progress)),
+                        },
                         None => {
-                            break Err(CodexErr::Stream(
+                            break Err(wrap_stream_error(
+                                CodexErr::Stream(
                                 "stream closed before response.completed".into(),
                                 None,
+                            ),
+                                &attempt_progress,
                             ));
                         }
                     }
@@ -7684,6 +7927,7 @@ async fn try_run_sampling_request(
         match event {
             ResponseEvent::Created => {}
             ResponseEvent::OutputItemDone(item) => {
+                attempt_progress.note_output_item_done(&item);
                 let previously_active_item = active_item.take();
                 if let Some(previous) = previously_active_item.as_ref()
                     && matches!(previous, TurnItem::AgentMessage(_))
@@ -7742,9 +7986,11 @@ async fn try_run_sampling_request(
                     .instrument(handle_responses)
                     .await?;
                 if let Some(tool_future) = output_result.tool_future {
+                    attempt_progress.note_tool_future();
                     in_flight.push_back(tool_future);
                 }
                 if let Some(agent_message) = output_result.last_agent_message {
+                    attempt_progress.last_agent_message = Some(agent_message.clone());
                     last_agent_message = Some(agent_message);
                 }
                 needs_follow_up |= output_result.needs_follow_up;
@@ -7759,6 +8005,7 @@ async fn try_run_sampling_request(
                 }
             }
             ResponseEvent::OutputItemAdded(item) => {
+                attempt_progress.note_output_item_added(&item);
                 if let Some(turn_item) = handle_non_tool_response_item(
                     sess.as_ref(),
                     turn_context.as_ref(),
@@ -7776,6 +8023,7 @@ async fn try_run_sampling_request(
                         let item_id = turn_item.id();
                         let mut seeded =
                             assistant_message_stream_parsers.seed_item_text(&item_id, &raw_text);
+                        attempt_progress.note_streamed_assistant_text(&seeded.visible_text);
                         if let TurnItem::AgentMessage(agent_message) = &mut turn_item {
                             agent_message.content =
                                 vec![codex_protocol::items::AgentMessageContent::Text {
@@ -7864,6 +8112,7 @@ async fn try_run_sampling_request(
                     let item_id = active.id();
                     if matches!(active, TurnItem::AgentMessage(_)) {
                         let parsed = assistant_message_stream_parsers.parse_delta(&item_id, &delta);
+                        attempt_progress.note_streamed_assistant_text(&parsed.visible_text);
                         emit_streamed_assistant_text_delta(
                             &sess,
                             &turn_context,
@@ -7948,7 +8197,7 @@ async fn try_run_sampling_request(
     drain_in_flight(&mut in_flight, sess.clone(), turn_context.clone()).await?;
 
     if cancellation_token.is_cancelled() {
-        return Err(CodexErr::TurnAborted);
+        return Err(SamplingRequestError::Codex(CodexErr::TurnAborted));
     }
 
     if should_emit_turn_diff {
