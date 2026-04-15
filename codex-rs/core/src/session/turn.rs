@@ -36,6 +36,7 @@ use crate::mentions::build_skill_name_counts;
 use crate::mentions::collect_explicit_app_ids;
 use crate::mentions::collect_explicit_plugin_mentions;
 use crate::mentions::collect_tool_mentions_from_messages;
+use crate::maybe_collect_desktop_top_level_skill_injection;
 use crate::parse_turn_item;
 use crate::plugins::build_plugin_injections;
 use crate::resolve_skill_dependencies_for_turn;
@@ -216,7 +217,8 @@ pub(crate) async fn run_turn(
         .map_or_else(HashMap::new, |outcome| {
             build_skill_name_counts(&outcome.skills, &outcome.disabled_paths).1
         });
-    let mentioned_skills = skills_outcome.as_ref().map_or_else(Vec::new, |outcome| {
+    let config = turn_context.config.clone();
+    let mut mentioned_skills = skills_outcome.as_ref().map_or_else(Vec::new, |outcome| {
         collect_explicit_skill_mentions(
             &input,
             &outcome.skills,
@@ -224,7 +226,20 @@ pub(crate) async fn run_turn(
             &connector_slug_counts,
         )
     });
-    let config = turn_context.config.clone();
+    if mentioned_skills.is_empty()
+        && let Some(outcome) = skills_outcome.as_ref()
+    {
+        mentioned_skills.extend(maybe_collect_desktop_top_level_skill_injection(
+            &input,
+            &outcome.skills,
+            &outcome.disabled_paths,
+            turn_context.app_server_client_name.as_deref(),
+            turn_context.cwd.as_path(),
+            config
+                .features
+                .enabled(Feature::DesktopDeterministicTopLevelSkillInjection),
+        ));
+    }
     if config
         .features
         .enabled(Feature::SkillEnvVarDependencyPrompt)

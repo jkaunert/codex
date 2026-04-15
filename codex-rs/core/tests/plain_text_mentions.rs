@@ -27,6 +27,8 @@ use wiremock::MockServer;
 const SAMPLE_PLUGIN_CONFIG_NAME: &str = "sample@test";
 const SAMPLE_PLUGIN_DISPLAY_NAME: &str = "sample";
 const SAMPLE_PLUGIN_DESCRIPTION: &str = "inspect sample data";
+const APPLE_PLUGIN_CONFIG_NAME: &str = "apple-workflow@test";
+const APPLE_PLUGIN_DISPLAY_NAME: &str = "apple-appdev-workflow";
 
 fn write_skill(home: &std::path::Path, name: &str, description: &str, body: &str) {
     let skill_dir = home.join("skills").join(name);
@@ -43,6 +45,10 @@ fn write_skill_metadata(home: &std::path::Path, name: &str, contents: &str) {
 
 fn sample_plugin_root(home: &TempDir) -> std::path::PathBuf {
     home.path().join("plugins/cache/test/sample/local")
+}
+
+fn apple_plugin_root(home: &TempDir) -> std::path::PathBuf {
+    home.path().join("plugins/cache/test/apple-workflow/local")
 }
 
 fn write_sample_plugin_manifest_and_config(home: &TempDir) -> std::path::PathBuf {
@@ -63,6 +69,33 @@ fn write_sample_plugin_manifest_and_config(home: &TempDir) -> std::path::PathBuf
     )
     .expect("write config");
     plugin_root
+}
+
+fn write_apple_orchestrator_plugin(home: &TempDir) {
+    let plugin_root = apple_plugin_root(home);
+    std::fs::create_dir_all(plugin_root.join(".codex-plugin")).expect("create plugin manifest dir");
+    std::fs::write(
+        plugin_root.join(".codex-plugin/plugin.json"),
+        format!(
+            r#"{{"name":"{APPLE_PLUGIN_DISPLAY_NAME}","description":"broad Apple workflow routing"}}"#
+        ),
+    )
+    .expect("write plugin manifest");
+    std::fs::write(
+        home.path().join("config.toml"),
+        format!(
+            "[features]\nplugins = true\n\n[plugins.\"{APPLE_PLUGIN_CONFIG_NAME}\"]\nenabled = true\n"
+        ),
+    )
+    .expect("write config");
+
+    let skill_dir = plugin_root.join("skills/apple-app-orchestrator");
+    std::fs::create_dir_all(skill_dir.as_path()).expect("create plugin skill dir");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\ndescription: broad Apple workflow routing\n---\n\n# apple app orchestrator body\n",
+    )
+    .expect("write plugin skill");
 }
 
 fn write_plugin_skill_plugin(home: &TempDir) {
@@ -165,12 +198,14 @@ async fn user_turn_includes_skill_instructions_for_plain_text_name() -> Result<(
             approval_policy: AskForApproval::Never,
             approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
+            permission_profile: None,
             model: session_model,
             effort: None,
             summary: None,
             service_tier: None,
             collaboration_mode: None,
             personality: None,
+            environments: None,
         })
         .await?;
 
@@ -229,12 +264,14 @@ async fn initial_context_lists_explicit_only_skills_separately() -> Result<()> {
             approval_policy: AskForApproval::Never,
             approvals_reviewer: None,
             sandbox_policy: SandboxPolicy::DangerFullAccess,
+            permission_profile: None,
             model: session_model,
             effort: None,
             summary: None,
             service_tier: None,
             collaboration_mode: None,
             personality: None,
+            environments: None,
         })
         .await?;
 
@@ -294,11 +331,13 @@ async fn plain_text_plugin_mentions_inject_plugin_guidance() -> Result<()> {
 
     codex
         .submit(Op::UserInput {
+            environments: None,
             items: vec![UserInput::Text {
                 text: "use sample for this task".into(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,
+            responsesapi_client_metadata: None,
         })
         .await?;
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
@@ -322,6 +361,68 @@ async fn plain_text_plugin_mentions_inject_plugin_guidance() -> Result<()> {
             .iter()
             .any(|text| text.contains("Apps from this plugin")),
         "expected visible plugin app guidance: {developer_messages:?}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn desktop_top_level_skill_injection_injects_apple_plugin_orchestrator() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+
+    let codex_home = Arc::new(TempDir::new()?);
+    write_apple_orchestrator_plugin(codex_home.as_ref());
+
+    let mut builder = test_codex()
+        .with_home(codex_home)
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::DesktopDeterministicTopLevelSkillInjection)
+                .expect("test config should allow feature update");
+        });
+    let test = builder.build(&server).await?;
+
+    test.codex
+        .set_app_server_client_info(Some("desktop-client".to_string()), Some("test".to_string()))
+        .await?;
+
+    test.codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "Create a new iOS SwiftUI app named SampleApp.".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+        })
+        .await?;
+
+    wait_for_event(test.codex.as_ref(), |event| {
+        matches!(event, codex_protocol::protocol::EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let request = mock.single_request();
+    let user_texts = request.message_input_texts("user");
+    assert!(
+        user_texts.iter().any(|text| {
+            text.contains("<skill>\n<name>apple-appdev-workflow:apple-app-orchestrator</name>")
+        }),
+        "expected deterministic structured injection for the Apple orchestrator, got {user_texts:?}"
     );
 
     Ok(())
