@@ -37,6 +37,7 @@ pub use codex_core_skills::injection::build_skill_injections;
 pub use codex_core_skills::injection::collect_explicit_skill_mentions;
 pub use codex_core_skills::loader;
 pub use codex_core_skills::manager;
+pub use codex_core_skills::maybe_collect_desktop_top_level_skill_injection;
 pub use codex_core_skills::model;
 pub use codex_core_skills::remote;
 pub use codex_core_skills::render;
