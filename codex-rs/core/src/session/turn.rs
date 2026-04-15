@@ -34,6 +34,7 @@ use crate::mentions::build_skill_name_counts;
 use crate::mentions::collect_explicit_app_ids;
 use crate::mentions::collect_explicit_plugin_mentions;
 use crate::mentions::collect_tool_mentions_from_messages;
+use crate::maybe_collect_desktop_top_level_skill_injection;
 use crate::plugins::build_plugin_injections;
 use crate::session::PreviousTurnSettings;
 use crate::session::TurnInput;
@@ -510,12 +511,25 @@ async fn build_skills_and_plugins(
     let connector_slug_counts = build_connector_slug_counts(&available_connectors);
     let skill_name_counts_lower =
         build_skill_name_counts(&skills_outcome.skills, &skills_outcome.disabled_paths).1;
-    let mentioned_skills = collect_explicit_skill_mentions(
+    let mut mentioned_skills = collect_explicit_skill_mentions(
         input,
         &skills_outcome.skills,
         &skills_outcome.disabled_paths,
         &connector_slug_counts,
     );
+    if mentioned_skills.is_empty() {
+        mentioned_skills.extend(maybe_collect_desktop_top_level_skill_injection(
+            input,
+            &skills_outcome.skills,
+            &skills_outcome.disabled_paths,
+            turn_context.app_server_client_name.as_deref(),
+            turn_context.cwd.as_path(),
+            turn_context
+                .config
+                .features
+                .enabled(Feature::DesktopDeterministicTopLevelSkillInjection),
+        ));
+    }
     maybe_prompt_and_install_mcp_dependencies(
         sess,
         turn_context,

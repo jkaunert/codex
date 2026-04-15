@@ -11,7 +11,9 @@ use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::Op;
+use codex_protocol::user_input::UserInput;
 use core_test_support::apps_test_server::AppsTestServer;
+use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once;
@@ -28,9 +30,15 @@ use wiremock::MockServer;
 const SAMPLE_PLUGIN_CONFIG_NAME: &str = "sample@test";
 const SAMPLE_PLUGIN_DISPLAY_NAME: &str = "sample";
 const SAMPLE_PLUGIN_DESCRIPTION: &str = "inspect sample data";
+const APPLE_PLUGIN_CONFIG_NAME: &str = "apple-workflow@test";
+const APPLE_PLUGIN_DISPLAY_NAME: &str = "apple-appdev-workflow";
 
 fn sample_plugin_root(home: &TempDir) -> std::path::PathBuf {
     home.path().join("plugins/cache/test/sample/local")
+}
+
+fn apple_plugin_root(home: &TempDir) -> std::path::PathBuf {
+    home.path().join("plugins/cache/test/apple-workflow/local")
 }
 
 fn write_sample_plugin_manifest_and_config(home: &TempDir) -> std::path::PathBuf {
@@ -53,6 +61,33 @@ fn write_sample_plugin_manifest_and_config(home: &TempDir) -> std::path::PathBuf
     plugin_root
 }
 
+fn write_apple_orchestrator_plugin(home: &TempDir) {
+    let plugin_root = apple_plugin_root(home);
+    std::fs::create_dir_all(plugin_root.join(".codex-plugin")).expect("create plugin manifest dir");
+    std::fs::write(
+        plugin_root.join(".codex-plugin/plugin.json"),
+        format!(
+            r#"{{"name":"{APPLE_PLUGIN_DISPLAY_NAME}","description":"broad Apple workflow routing"}}"#
+        ),
+    )
+    .expect("write plugin manifest");
+    std::fs::write(
+        home.path().join("config.toml"),
+        format!(
+            "[features]\nplugins = true\n\n[plugins.\"{APPLE_PLUGIN_CONFIG_NAME}\"]\nenabled = true\n"
+        ),
+    )
+    .expect("write config");
+
+    let skill_dir = plugin_root.join("skills/apple-app-orchestrator");
+    std::fs::create_dir_all(skill_dir.as_path()).expect("create plugin skill dir");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\ndescription: broad Apple workflow routing\n---\n\n# apple app orchestrator body\n",
+    )
+    .expect("write plugin skill");
+}
+
 fn write_plugin_skill_plugin(home: &TempDir) -> std::path::PathBuf {
     let plugin_root = write_sample_plugin_manifest_and_config(home);
     let skill_dir = plugin_root.join("skills/sample-search");
@@ -63,6 +98,68 @@ fn write_plugin_skill_plugin(home: &TempDir) -> std::path::PathBuf {
     )
     .expect("write plugin skill");
     skill_dir.join("SKILL.md")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn desktop_top_level_skill_injection_injects_apple_plugin_orchestrator() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+
+    let codex_home = Arc::new(TempDir::new()?);
+    write_apple_orchestrator_plugin(codex_home.as_ref());
+
+    let mut builder = test_codex()
+        .with_home(codex_home)
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::DesktopDeterministicTopLevelSkillInjection)
+                .expect("test config should allow feature update");
+        });
+    let test = builder.build(&server).await?;
+
+    test.codex
+        .set_app_server_client_info(Some("desktop-client".to_string()), Some("test".to_string()))
+        .await?;
+
+    test.codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: "Create a new iOS SwiftUI app named SampleApp.".to_string(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+        })
+        .await?;
+
+    wait_for_event(test.codex.as_ref(), |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let request = mock.single_request();
+    let user_texts = request.message_input_texts("user");
+    assert!(
+        user_texts.iter().any(|text| {
+            text.contains("<skill>\n<name>apple-appdev-workflow:apple-app-orchestrator</name>")
+        }),
+        "expected deterministic structured injection for the Apple orchestrator, got {user_texts:?}"
+    );
+
+    Ok(())
 }
 
 fn write_plugin_mcp_plugin(home: &TempDir, command: &str) {
