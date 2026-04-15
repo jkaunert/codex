@@ -190,6 +190,8 @@ pub enum Feature {
     SkillMcpDependencyInstall,
     /// Prompt for missing skill env var dependencies.
     SkillEnvVarDependencyPrompt,
+    /// Desktop-client experiment for deterministic top-level skill injection on broad Apple prompts.
+    DesktopDeterministicTopLevelSkillInjection,
     /// Steer feature flag - when enabled, Enter submits immediately instead of queuing.
     /// Kept for config backward compatibility; behavior is always steer-enabled.
     Steer,
@@ -1000,6 +1002,12 @@ pub const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::SkillEnvVarDependencyPrompt,
         key: "skill_env_var_dependency_prompt",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::DesktopDeterministicTopLevelSkillInjection,
+        key: "desktop_deterministic_top_level_skill_injection",
         stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
