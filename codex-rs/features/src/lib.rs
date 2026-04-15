@@ -172,6 +172,8 @@ pub enum Feature {
     SkillEnvVarDependencyPrompt,
     /// Enable the unified mention popup prototype.
     MentionsV2,
+    /// Desktop-client experiment for deterministic top-level skill injection on broad Apple prompts.
+    DesktopDeterministicTopLevelSkillInjection,
     /// Allow request_user_input in Default collaboration mode.
     DefaultModeRequestUserInput,
     /// Enable automatic review for approval prompts.
@@ -1057,6 +1059,12 @@ pub const FEATURES: &[FeatureSpec] = &[
             menu_description: "Use a unified @ mention popup for files, folders, apps, plugins, and skills.",
             announcement: "",
         },
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::DesktopDeterministicTopLevelSkillInjection,
+        key: "desktop_deterministic_top_level_skill_injection",
+        stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
     FeatureSpec {

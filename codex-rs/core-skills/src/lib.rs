@@ -1,4 +1,5 @@
 pub mod config_rules;
+pub mod experimental_auto_injection;
 pub mod injection;
 pub(crate) mod invocation_utils;
 pub mod loader;
@@ -9,6 +10,7 @@ pub mod remote;
 pub mod render;
 pub mod system;
 
+pub use experimental_auto_injection::maybe_collect_desktop_top_level_skill_injection;
 pub(crate) use invocation_utils::build_implicit_skill_path_indexes;
 pub use invocation_utils::detect_implicit_skill_invocation_for_command;
 pub use manager::SkillsLoadInput;
