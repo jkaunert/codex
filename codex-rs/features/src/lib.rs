@@ -195,6 +195,8 @@ pub enum Feature {
     SkillEnvVarDependencyPrompt,
     /// Enable the unified mention popup used by default in the TUI.
     MentionsV2,
+    /// Desktop-client experiment for deterministic top-level skill injection on broad Apple prompts.
+    DesktopDeterministicTopLevelSkillInjection,
     /// Allow request_user_input in Default collaboration mode.
     DefaultModeRequestUserInput,
     /// Enable automatic review for approval prompts.
@@ -1130,6 +1132,12 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "mentions_v2",
         stage: Stage::Stable,
         default_enabled: true,
+    },
+    FeatureSpec {
+        id: Feature::DesktopDeterministicTopLevelSkillInjection,
+        key: "desktop_deterministic_top_level_skill_injection",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
     },
     FeatureSpec {
         id: Feature::Steer,
