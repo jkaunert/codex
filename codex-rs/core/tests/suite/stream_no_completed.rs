@@ -55,6 +55,20 @@ fn ev_commentary_message_item_done(id: &str, text: &str) -> Value {
     })
 }
 
+fn ev_reasoning_item_done(id: &str, text: &str) -> Value {
+    json!({
+        "type": "response.output_item.done",
+        "item": {
+            "type": "reasoning",
+            "id": id,
+            "summary": [{
+                "type": "summary_text",
+                "text": text
+            }]
+        }
+    })
+}
+
 fn chunk(event: Value) -> StreamingSseChunk {
     StreamingSseChunk {
         gate: None,
@@ -340,6 +354,469 @@ async fn retries_rebuild_prompt_from_history_after_commentary_only_interruption(
             .get("phase")
             .and_then(|phase| phase.as_str()),
         Some("commentary")
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retries_rebuild_prompt_from_history_after_commentary_delta_only_interruption() {
+    skip_if_no_network!();
+
+    let first_attempt = vec![
+        chunk(ev_response_created("resp-partial")),
+        chunk(ev_message_item_added("msg-1", "")),
+        chunk(ev_output_text_delta("Routing: orchestrator-led")),
+    ];
+
+    let second_attempt = vec![
+        chunk(ev_response_created("resp-final")),
+        chunk(ev_message_item_added("msg-2", "")),
+        chunk(ev_output_text_delta("final after retry")),
+        chunk(ev_message_item_done("msg-2", "final after retry")),
+        chunk(ev_completed("resp-final")),
+    ];
+
+    let (server, _) = start_streaming_sse_server(vec![first_attempt, second_attempt]).await;
+
+    let model_provider = ModelProviderInfo {
+        name: "openai".into(),
+        base_url: Some(format!("{}/v1", server.uri())),
+        env_key: Some("PATH".into()),
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        auth: None,
+        wire_api: WireApi::Responses,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: Some(0),
+        stream_max_retries: Some(1),
+        stream_idle_timeout_ms: Some(50),
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+    };
+
+    let TestCodex { codex, .. } = test_codex()
+        .with_config(move |config| {
+            config.model_provider = model_provider;
+        })
+        .build_with_streaming_server(&server)
+        .await
+        .unwrap();
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+        })
+        .await
+        .unwrap();
+
+    wait_for_event(
+        &codex,
+        |event| matches!(event, EventMsg::AgentMessage(message) if message.message == "final after retry"),
+    )
+    .await;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    let requests = server.requests().await;
+    assert_eq!(
+        requests.len(),
+        2,
+        "expected one retry after commentary delta interruption"
+    );
+
+    let retry_body: Value =
+        serde_json::from_slice(&requests[1]).expect("retry request body should be valid JSON");
+    let retry_input = retry_body["input"].as_array().expect("retry input array");
+    retry_input
+        .iter()
+        .find(|item| {
+            item.get("role").and_then(|role| role.as_str()) == Some("assistant")
+                && item
+                    .get("content")
+                    .and_then(|content| content.as_array())
+                    .and_then(|content| content.first())
+                    .and_then(|entry| entry.get("text"))
+                    .and_then(|text| text.as_str())
+                    == Some("Routing: orchestrator-led")
+        })
+        .expect(
+            "retry request should include partial streamed commentary from the interrupted attempt",
+        );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fail_fast_reports_last_visible_message_across_no_progress_retries() {
+    skip_if_no_network!();
+
+    let first_attempt = vec![
+        chunk(ev_response_created("resp-commentary")),
+        chunk(ev_message_item_added("msg-1", "")),
+        chunk(ev_output_text_delta("Routing: orchestrator-led")),
+    ];
+
+    let empty_attempt = |response_id: &str| vec![chunk(ev_response_created(response_id))];
+
+    let (server, _) = start_streaming_sse_server(vec![
+        first_attempt,
+        empty_attempt("resp-2"),
+        empty_attempt("resp-3"),
+    ])
+    .await;
+
+    let model_provider = ModelProviderInfo {
+        name: "openai".into(),
+        base_url: Some(format!("{}/v1", server.uri())),
+        env_key: Some("PATH".into()),
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        auth: None,
+        wire_api: WireApi::Responses,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: Some(0),
+        stream_max_retries: Some(5),
+        stream_idle_timeout_ms: Some(50),
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+    };
+
+    let TestCodex { codex, .. } = test_codex()
+        .with_config(move |config| {
+            config.model_provider = model_provider;
+        })
+        .build_with_streaming_server(&server)
+        .await
+        .unwrap();
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+        })
+        .await
+        .unwrap();
+
+    let mut failure_message = None;
+    wait_for_event(&codex, |event| match event {
+        EventMsg::Error(error)
+            if error
+                .message
+                .contains("after emitting visible commentary/output but still never completed the answer") =>
+        {
+            failure_message = Some(error.message.clone());
+            true
+        }
+        _ => false,
+    })
+    .await;
+
+    let failure_message = failure_message.expect("expected retry loop error");
+    assert!(
+        failure_message.contains("Routing: orchestrator-led"),
+        "expected last visible assistant message in error: {failure_message}"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fails_fast_after_repeated_commentary_only_retries_without_progress() {
+    skip_if_no_network!();
+
+    let commentary_only_attempt = |response_id: &str, message_id: &str| {
+        vec![
+            chunk(ev_response_created(response_id)),
+            chunk(ev_message_item_added(message_id, "")),
+            chunk(ev_output_text_delta("Routing: orchestrator-led")),
+            chunk(ev_commentary_message_item_done(
+                message_id,
+                "Routing: orchestrator-led",
+            )),
+        ]
+    };
+
+    let (server, _) = start_streaming_sse_server(vec![
+        commentary_only_attempt("resp-1", "msg-1"),
+        commentary_only_attempt("resp-2", "msg-2"),
+        commentary_only_attempt("resp-3", "msg-3"),
+        commentary_only_attempt("resp-4", "msg-4"),
+    ])
+    .await;
+
+    let model_provider = ModelProviderInfo {
+        name: "openai".into(),
+        base_url: Some(format!("{}/v1", server.uri())),
+        env_key: Some("PATH".into()),
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        auth: None,
+        wire_api: WireApi::Responses,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: Some(0),
+        stream_max_retries: Some(5),
+        stream_idle_timeout_ms: Some(50),
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+    };
+
+    let TestCodex { codex, .. } = test_codex()
+        .with_config(move |config| {
+            config.model_provider = model_provider;
+        })
+        .build_with_streaming_server(&server)
+        .await
+        .unwrap();
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+        })
+        .await
+        .unwrap();
+
+    let mut failure_message = None;
+    wait_for_event(&codex, |event| match event {
+        EventMsg::Error(error)
+            if error
+                .message
+                .contains("after emitting visible commentary/output but still never completed the answer") =>
+        {
+            failure_message = Some(error.message.clone());
+            true
+        }
+        _ => false,
+    })
+    .await;
+
+    let failure_message = failure_message.expect("expected commentary-only retry loop error");
+    assert!(
+        failure_message.contains("retried 3 times"),
+        "expected retry count in error message: {failure_message}"
+    );
+
+    let requests = server.requests().await;
+    assert_eq!(
+        requests.len(),
+        3,
+        "expected commentary-only retry loop to stop before exhausting the full retry budget"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fails_fast_after_repeated_commentary_plus_reasoning_retries_without_progress() {
+    skip_if_no_network!();
+
+    let commentary_plus_reasoning_attempt =
+        |response_id: &str, message_id: &str, reasoning_id: &str| {
+            vec![
+                chunk(ev_response_created(response_id)),
+                chunk(ev_message_item_added(message_id, "")),
+                chunk(ev_output_text_delta("Routing: orchestrator-led")),
+                chunk(ev_commentary_message_item_done(
+                    message_id,
+                    "Routing: orchestrator-led",
+                )),
+                chunk(ev_reasoning_item_done(
+                    reasoning_id,
+                    "Still thinking through the supplied diff evidence.",
+                )),
+            ]
+        };
+
+    let (server, _) = start_streaming_sse_server(vec![
+        commentary_plus_reasoning_attempt("resp-1", "msg-1", "rs-1"),
+        commentary_plus_reasoning_attempt("resp-2", "msg-2", "rs-2"),
+        commentary_plus_reasoning_attempt("resp-3", "msg-3", "rs-3"),
+        commentary_plus_reasoning_attempt("resp-4", "msg-4", "rs-4"),
+    ])
+    .await;
+
+    let model_provider = ModelProviderInfo {
+        name: "openai".into(),
+        base_url: Some(format!("{}/v1", server.uri())),
+        env_key: Some("PATH".into()),
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        auth: None,
+        wire_api: WireApi::Responses,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: Some(0),
+        stream_max_retries: Some(5),
+        stream_idle_timeout_ms: Some(50),
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+    };
+
+    let TestCodex { codex, .. } = test_codex()
+        .with_config(move |config| {
+            config.model_provider = model_provider;
+        })
+        .build_with_streaming_server(&server)
+        .await
+        .unwrap();
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+        })
+        .await
+        .unwrap();
+
+    let mut failure_message = None;
+    wait_for_event(&codex, |event| match event {
+        EventMsg::Error(error)
+            if error
+                .message
+                .contains("after emitting visible commentary/output but still never completed the answer") =>
+        {
+            failure_message = Some(error.message.clone());
+            true
+        }
+        _ => false,
+    })
+    .await;
+
+    let failure_message =
+        failure_message.expect("expected commentary-plus-reasoning retry loop error");
+    assert!(
+        failure_message.contains("retried 3 times"),
+        "expected retry count in error message: {failure_message}"
+    );
+
+    let requests = server.requests().await;
+    assert_eq!(
+        requests.len(),
+        3,
+        "expected commentary-plus-reasoning retry loop to stop before exhausting the full retry budget"
+    );
+
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resets_no_progress_loop_when_retry_branch_improves_to_visible_commentary() {
+    skip_if_no_network!();
+
+    let empty_stall_attempt = |response_id: &str, message_id: &str| {
+        vec![
+            chunk(ev_response_created(response_id)),
+            chunk(ev_message_item_added(message_id, "")),
+        ]
+    };
+
+    let visible_commentary_attempt = |response_id: &str, message_id: &str| {
+        vec![
+            chunk(ev_response_created(response_id)),
+            chunk(ev_message_item_added(message_id, "")),
+            chunk(ev_output_text_delta("Routing: orchestrator-led")),
+            chunk(ev_commentary_message_item_done(
+                message_id,
+                "Routing: orchestrator-led",
+            )),
+        ]
+    };
+
+    let final_attempt = vec![
+        chunk(ev_response_created("resp-final")),
+        chunk(ev_message_item_added("msg-final", "")),
+        chunk(ev_output_text_delta("final after improved retry")),
+        chunk(ev_message_item_done("msg-final", "final after improved retry")),
+        chunk(ev_completed("resp-final")),
+    ];
+
+    let (server, _) = start_streaming_sse_server(vec![
+        empty_stall_attempt("resp-empty-1", "msg-empty-1"),
+        empty_stall_attempt("resp-empty-2", "msg-empty-2"),
+        visible_commentary_attempt("resp-commentary", "msg-commentary"),
+        final_attempt,
+    ])
+    .await;
+
+    let model_provider = ModelProviderInfo {
+        name: "openai".into(),
+        base_url: Some(format!("{}/v1", server.uri())),
+        env_key: Some("PATH".into()),
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        auth: None,
+        wire_api: WireApi::Responses,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: Some(0),
+        stream_max_retries: Some(5),
+        stream_idle_timeout_ms: Some(50),
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+    };
+
+    let TestCodex { codex, .. } = test_codex()
+        .with_config(move |config| {
+            config.model_provider = model_provider;
+        })
+        .build_with_streaming_server(&server)
+        .await
+        .unwrap();
+
+    codex
+        .submit(Op::UserInput {
+            items: vec![UserInput::Text {
+                text: "hello".into(),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+        })
+        .await
+        .unwrap();
+
+    wait_for_event(
+        &codex,
+        |event| matches!(event, EventMsg::AgentMessage(message) if message.message == "final after improved retry"),
+    )
+    .await;
+    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+    let requests = server.requests().await;
+    assert_eq!(
+        requests.len(),
+        4,
+        "expected the no-progress loop counter to reset once durable visible commentary arrived"
     );
 
     server.shutdown().await;
