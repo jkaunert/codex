@@ -1069,10 +1069,6 @@ async fn run_sampling_request(
             Err(err) => err,
         };
 
-        if !err.is_retryable() {
-            return Err(err);
-        }
-
         // Use the configured provider-specific stream retry budget.
         let max_retries = turn_context.provider.info().stream_max_retries();
         if matches!(&err, CodexErr::InvalidRequest(message) if message.contains("previous_response_not_found")) {
@@ -1103,6 +1099,11 @@ async fn run_sampling_request(
             }
             return Err(err);
         }
+
+        if !err.is_retryable() {
+            return Err(err);
+        }
+
         if retries >= max_retries
             && client_session.try_switch_fallback_transport(
                 &turn_context.session_telemetry,

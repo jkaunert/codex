@@ -240,6 +240,17 @@ struct WebsocketSession {
     connection_reused: StdMutex<bool>,
 }
 
+struct PreparedWebsocketRequest {
+    request: ResponsesWsRequest,
+    request_mode: &'static str,
+    fresh_reason: &'static str,
+    previous_request_present: bool,
+    last_response_rx_present: bool,
+    last_response_ready: bool,
+    previous_response_id_present: bool,
+    incremental_input_items: usize,
+}
+
 impl WebsocketSession {
     fn set_connection_reused(&self, connection_reused: bool) {
         *self
@@ -992,9 +1003,20 @@ impl ModelClientSession {
         &mut self,
         payload: ResponseCreateWsRequest,
         request: &ResponsesApiRequest,
-    ) -> ResponsesWsRequest {
+    ) -> PreparedWebsocketRequest {
+        let previous_request_present = self.websocket_session.last_request.is_some();
+        let last_response_rx_present = self.websocket_session.last_response_rx.is_some();
         let Some(last_response) = self.get_last_response() else {
-            return ResponsesWsRequest::ResponseCreate(payload);
+            return PreparedWebsocketRequest {
+                request: ResponsesWsRequest::ResponseCreate(payload),
+                request_mode: "fresh",
+                fresh_reason: "no_last_response",
+                previous_request_present,
+                last_response_rx_present,
+                last_response_ready: false,
+                previous_response_id_present: false,
+                incremental_input_items: 0,
+            };
         };
 
         if !last_response.completed
@@ -1031,19 +1053,47 @@ impl ModelClientSession {
             Some(&last_response),
             /*allow_empty_delta*/ true,
         ) else {
-            return ResponsesWsRequest::ResponseCreate(payload);
+            return PreparedWebsocketRequest {
+                request: ResponsesWsRequest::ResponseCreate(payload),
+                request_mode: "fresh",
+                fresh_reason: "non_incremental_request",
+                previous_request_present,
+                last_response_rx_present,
+                last_response_ready: true,
+                previous_response_id_present: false,
+                incremental_input_items: 0,
+            };
         };
 
         if last_response.response_id.is_empty() {
             trace!("incremental request failed, no previous response id");
-            return ResponsesWsRequest::ResponseCreate(payload);
+            return PreparedWebsocketRequest {
+                request: ResponsesWsRequest::ResponseCreate(payload),
+                request_mode: "fresh",
+                fresh_reason: "missing_previous_response_id",
+                previous_request_present,
+                last_response_rx_present,
+                last_response_ready: true,
+                previous_response_id_present: false,
+                incremental_input_items: 0,
+            };
         }
 
-        ResponsesWsRequest::ResponseCreate(ResponseCreateWsRequest {
-            previous_response_id: Some(last_response.response_id),
-            input: incremental_items,
-            ..payload
-        })
+        let incremental_input_items = incremental_items.len();
+        PreparedWebsocketRequest {
+            request: ResponsesWsRequest::ResponseCreate(ResponseCreateWsRequest {
+                previous_response_id: Some(last_response.response_id),
+                input: incremental_items,
+                ..payload
+            }),
+            request_mode: "incremental",
+            fresh_reason: "incremental_reuse",
+            previous_request_present,
+            last_response_rx_present,
+            last_response_ready: true,
+            previous_response_id_present: true,
+            incremental_input_items,
+        }
     }
 
     /// Opportunistically preconnects a websocket for this turn-scoped client session.
