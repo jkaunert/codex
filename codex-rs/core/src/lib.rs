@@ -101,6 +101,7 @@ pub(crate) use skills::collect_env_var_dependencies;
 pub(crate) use skills::collect_explicit_skill_mentions;
 pub(crate) use skills::injection;
 pub(crate) use skills::manager;
+pub(crate) use skills::maybe_collect_desktop_top_level_skill_injection;
 pub(crate) use skills::maybe_emit_implicit_skill_invocation;
 pub(crate) use skills::render_skills_section;
 pub(crate) use skills::resolve_skill_dependencies_for_turn;
