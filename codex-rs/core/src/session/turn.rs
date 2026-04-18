@@ -27,6 +27,7 @@ use crate::hook_runtime::run_user_prompt_submit_hooks;
 use crate::injection::ToolMentionKind;
 use crate::injection::app_id_from_path;
 use crate::injection::tool_kind_for_path;
+use crate::maybe_collect_desktop_top_level_skill_injection;
 use crate::mcp_skill_dependencies::maybe_prompt_and_install_mcp_dependencies;
 use crate::mcp_tool_exposure::build_mcp_tool_exposure;
 use crate::mentions::build_connector_slug_counts;
@@ -208,7 +209,7 @@ pub(crate) async fn run_turn(
         .map_or_else(HashMap::new, |outcome| {
             build_skill_name_counts(&outcome.skills, &outcome.disabled_paths).1
         });
-    let mentioned_skills = skills_outcome.as_ref().map_or_else(Vec::new, |outcome| {
+    let mut mentioned_skills = skills_outcome.as_ref().map_or_else(Vec::new, |outcome| {
         collect_explicit_skill_mentions(
             &input,
             &outcome.skills,
@@ -217,6 +218,20 @@ pub(crate) async fn run_turn(
         )
     });
     let config = turn_context.config.clone();
+    if mentioned_skills.is_empty() {
+        if let Some(outcome) = skills_outcome.as_ref() {
+            mentioned_skills.extend(maybe_collect_desktop_top_level_skill_injection(
+                &input,
+                &outcome.skills,
+                &outcome.disabled_paths,
+                turn_context.app_server_client_name.as_deref(),
+                turn_context.cwd.as_path(),
+                config
+                    .features
+                    .enabled(Feature::DesktopDeterministicTopLevelSkillInjection),
+            ));
+        }
+    }
     if config
         .features
         .enabled(Feature::SkillEnvVarDependencyPrompt)
