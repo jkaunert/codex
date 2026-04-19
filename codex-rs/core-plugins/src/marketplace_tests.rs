@@ -113,6 +113,79 @@ fn find_marketplace_plugin_supports_alternate_layout_and_string_local_source() {
 }
 
 #[test]
+fn find_marketplace_plugin_accepts_marketplace_root_directory() {
+    let tmp = tempdir().unwrap();
+    let repo_root = tmp.path().join("repo");
+    fs::create_dir_all(repo_root.join(".git")).unwrap();
+    fs::create_dir_all(repo_root.join(".agents/plugins")).unwrap();
+    fs::write(
+        repo_root.join(".agents/plugins/marketplace.json"),
+        r#"{
+  "name": "codex-curated",
+  "plugins": [
+    {
+      "name": "local-plugin",
+      "source": {
+        "source": "local",
+        "path": "./plugin-1"
+      }
+    }
+  ]
+}"#,
+    )
+    .unwrap();
+
+    let resolved = find_marketplace_plugin(
+        &AbsolutePathBuf::try_from(repo_root.clone()).unwrap(),
+        "local-plugin",
+    )
+    .unwrap();
+
+    assert_eq!(
+        resolved.source,
+        MarketplacePluginSource::Local {
+            path: AbsolutePathBuf::try_from(repo_root.join("plugin-1")).unwrap(),
+        }
+    );
+}
+
+#[test]
+fn load_marketplace_accepts_marketplace_root_directory() {
+    let tmp = tempdir().unwrap();
+    let repo_root = tmp.path().join("repo");
+    fs::create_dir_all(repo_root.join(".git")).unwrap();
+    fs::create_dir_all(repo_root.join(".agents/plugins")).unwrap();
+    fs::write(
+        repo_root.join(".agents/plugins/marketplace.json"),
+        r#"{
+  "name": "codex-curated",
+  "plugins": [
+    {
+      "name": "local-plugin",
+      "source": {
+        "source": "local",
+        "path": "./plugin-1"
+      }
+    }
+  ]
+}"#,
+    )
+    .unwrap();
+
+    let marketplace = load_marketplace(&AbsolutePathBuf::try_from(repo_root.clone()).unwrap())
+        .unwrap();
+
+    assert_eq!(marketplace.name, "codex-curated");
+    assert_eq!(marketplace.plugins.len(), 1);
+    assert_eq!(
+        marketplace.plugins[0].source,
+        MarketplacePluginSource::Local {
+            path: AbsolutePathBuf::try_from(repo_root.join("plugin-1")).unwrap(),
+        }
+    );
+}
+
+#[test]
 fn find_marketplace_plugin_supports_git_subdir_sources() {
     let tmp = tempdir().unwrap();
     let repo_root = tmp.path().join("repo");

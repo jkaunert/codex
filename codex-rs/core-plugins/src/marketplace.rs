@@ -171,7 +171,8 @@ pub fn find_marketplace_plugin(
     marketplace_path: &AbsolutePathBuf,
     plugin_name: &str,
 ) -> Result<ResolvedMarketplacePlugin, MarketplaceError> {
-    let marketplace = load_raw_marketplace_manifest(marketplace_path)?;
+    let marketplace_path = normalize_marketplace_manifest_path(marketplace_path)?;
+    let marketplace = load_raw_marketplace_manifest(&marketplace_path)?;
     let marketplace_name = marketplace.name;
     let marketplace_name_for_not_found = marketplace_name.clone();
     for plugin in marketplace.plugins {
@@ -180,7 +181,7 @@ pub fn find_marketplace_plugin(
         }
 
         if let Some(plugin) =
-            resolve_marketplace_plugin_entry(marketplace_path, &marketplace_name, plugin)?
+            resolve_marketplace_plugin_entry(&marketplace_path, &marketplace_name, plugin)?
         {
             return Ok(plugin);
         }
@@ -269,11 +270,12 @@ fn marketplace_root_from_layout(marketplace_path: &Path, relative_path: &str) ->
 }
 
 pub fn load_marketplace(path: &AbsolutePathBuf) -> Result<Marketplace, MarketplaceError> {
-    let marketplace = load_raw_marketplace_manifest(path)?;
+    let path = normalize_marketplace_manifest_path(path)?;
+    let marketplace = load_raw_marketplace_manifest(&path)?;
     let mut plugins = Vec::new();
 
     for plugin in marketplace.plugins {
-        let plugin = match resolve_marketplace_plugin_entry(path, &marketplace.name, plugin) {
+        let plugin = match resolve_marketplace_plugin_entry(&path, &marketplace.name, plugin) {
             Ok(Some(plugin)) => plugin,
             Ok(None) => continue,
             Err(MarketplaceError::InvalidPlugin(message)) => {
@@ -380,6 +382,17 @@ fn load_raw_marketplace_manifest(
         path: path.to_path_buf(),
         message: err.to_string(),
     })
+}
+
+fn normalize_marketplace_manifest_path(
+    path: &AbsolutePathBuf,
+) -> Result<AbsolutePathBuf, MarketplaceError> {
+    if path.is_dir() {
+        return find_marketplace_manifest_path(path.as_path())
+            .ok_or_else(|| invalid_marketplace_layout_error(path));
+    }
+
+    Ok(path.clone())
 }
 
 fn resolve_marketplace_plugin_entry(
@@ -679,16 +692,19 @@ pub fn plugin_interface_with_marketplace_category(
 fn marketplace_root_dir(
     marketplace_path: &AbsolutePathBuf,
 ) -> Result<AbsolutePathBuf, MarketplaceError> {
+    let marketplace_path = normalize_marketplace_manifest_path(marketplace_path)?;
     for relative_path in MARKETPLACE_MANIFEST_RELATIVE_PATHS {
-        if let Some(marketplace_root) =
-            marketplace_root_from_layout(marketplace_path.as_path(), relative_path)
+        if let Some(marketplace_root) = marketplace_root_from_layout(
+            marketplace_path.as_path(),
+            relative_path,
+        )
         {
             return AbsolutePathBuf::try_from(marketplace_root)
-                .map_err(|_| invalid_marketplace_layout_error(marketplace_path));
+                .map_err(|_| invalid_marketplace_layout_error(&marketplace_path));
         }
     }
 
-    Err(invalid_marketplace_layout_error(marketplace_path))
+    Err(invalid_marketplace_layout_error(&marketplace_path))
 }
 
 #[derive(Debug, Deserialize)]

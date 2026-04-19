@@ -283,9 +283,31 @@ async fn experimental_feature_enablement_set_rejects_non_allowlisted_feature() -
     assert!(
         error
             .message
-            .contains("apps, plugins, tool_search, tool_suggest, tool_call_mcp_elicitation"),
+            .contains(
+                "apps, plugins, tool_search, tool_suggest, tool_call_mcp_elicitation, realtime_conversation"
+            ),
         "{}",
         error.message
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn experimental_feature_enablement_set_accepts_realtime_conversation() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let actual = set_experimental_feature_enablement(
+        &mut mcp,
+        BTreeMap::from([("realtime_conversation".to_string(), true)]),
+    )
+    .await?;
+
+    assert_eq!(
+        actual.enablement.get("realtime_conversation"),
+        Some(&true)
     );
 
     Ok(())
