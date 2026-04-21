@@ -9,6 +9,17 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 const DESKTOP_CLIENT_SIGNAL: &str = "desktop";
 const PRIMARY_TARGET_SKILL: &str = "apple-appdev-workflow:apple-app-orchestrator";
 const FALLBACK_TARGET_SKILL: &str = "apple-app-orchestrator";
+const APPLE_PLUGIN_NAMESPACE_SIGNAL: &str = "apple-appdev-workflow:";
+const APPLE_BARE_SKILL_SIGNALS: &[&str] = &[
+    "apple-architecture-orchestrator",
+    "apple-product-surface-orchestrator",
+    "apple-review-orchestrator",
+    "apple-debug-orchestrator",
+    "apple-release-orchestrator",
+    "apple-persistence-orchestrator",
+    "apple-bootstrap-orchestrator",
+    "apple-accessibility-orchestrator",
+];
 const APPLE_PROMPT_SIGNALS: &[&str] = &[
     "ios",
     "macos",
@@ -70,9 +81,13 @@ fn has_apple_prompt_signal(inputs: &[UserInput]) -> bool {
     inputs.iter().any(|input| match input {
         UserInput::Text { text, .. } => {
             let lowered = text.to_ascii_lowercase();
-            APPLE_PROMPT_SIGNALS
-                .iter()
-                .any(|signal| lowered.contains(signal))
+            lowered.contains(APPLE_PLUGIN_NAMESPACE_SIGNAL)
+                || APPLE_BARE_SKILL_SIGNALS
+                    .iter()
+                    .any(|signal| lowered.contains(signal))
+                || APPLE_PROMPT_SIGNALS
+                    .iter()
+                    .any(|signal| lowered.contains(signal))
         }
         UserInput::Image { .. }
         | UserInput::LocalImage { .. }
@@ -83,7 +98,11 @@ fn has_apple_prompt_signal(inputs: &[UserInput]) -> bool {
 }
 
 fn has_apple_workspace_signal(cwd: &Path) -> bool {
-    let Ok(entries) = fs::read_dir(cwd) else {
+    path_has_apple_workspace_signal(cwd, 1)
+}
+
+fn path_has_apple_workspace_signal(path: &Path, remaining_child_depth: usize) -> bool {
+    let Ok(entries) = fs::read_dir(path) else {
         return false;
     };
 
@@ -95,10 +114,18 @@ fn has_apple_workspace_signal(cwd: &Path) -> bool {
         if APPLE_WORKSPACE_MARKERS.contains(&name) {
             return true;
         }
-        path.extension()
+        if path
+            .extension()
             .and_then(|value| value.to_str())
             .map(|ext| APPLE_WORKSPACE_EXTENSIONS.contains(&ext))
             .unwrap_or(false)
+        {
+            return true;
+        }
+        remaining_child_depth > 0
+            && path.is_dir()
+            && !name.starts_with('.')
+            && path_has_apple_workspace_signal(&path, remaining_child_depth - 1)
     })
 }
 
@@ -207,6 +234,54 @@ mod tests {
         let skill_path = tempdir.path().join("SKILL.md");
         let package_swift = tempdir.path().join("Package.swift");
         fs::write(&package_swift, "// marker").expect("write package marker");
+        let skills = vec![make_skill(PRIMARY_TARGET_SKILL, &skill_path)];
+        let inputs = vec![UserInput::Text {
+            text: "Review the current branch diff for bugs.".to_string(),
+            text_elements: Vec::new(),
+        }];
+
+        let injected = maybe_collect_desktop_top_level_skill_injection(
+            &inputs,
+            &skills,
+            &HashSet::new(),
+            Some("desktop-client"),
+            tempdir.path(),
+            true,
+        );
+
+        assert_eq!(1, injected.len());
+    }
+
+    #[test]
+    fn namespaced_plugin_prompt_injects_without_other_apple_keywords() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let skill_path = tempdir.path().join("SKILL.md");
+        let skills = vec![make_skill(PRIMARY_TARGET_SKILL, &skill_path)];
+        let inputs = vec![UserInput::Text {
+            text: "Use apple-appdev-workflow:apple-review-orchestrator to review the current branch diff."
+                .to_string(),
+            text_elements: Vec::new(),
+        }];
+
+        let injected = maybe_collect_desktop_top_level_skill_injection(
+            &inputs,
+            &skills,
+            &HashSet::new(),
+            Some("desktop-client"),
+            tempdir.path(),
+            true,
+        );
+
+        assert_eq!(1, injected.len());
+    }
+
+    #[test]
+    fn child_workspace_signal_injects_from_parent_directory() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let skill_path = tempdir.path().join("SKILL.md");
+        let child = tempdir.path().join("Wayfinder");
+        fs::create_dir_all(&child).expect("child workspace dir");
+        fs::create_dir(child.join("Wayfinder.xcodeproj")).expect("child xcodeproj marker");
         let skills = vec![make_skill(PRIMARY_TARGET_SKILL, &skill_path)];
         let inputs = vec![UserInput::Text {
             text: "Review the current branch diff for bugs.".to_string(),

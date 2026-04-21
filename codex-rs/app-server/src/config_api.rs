@@ -49,6 +49,7 @@ const SUPPORTED_EXPERIMENTAL_FEATURE_ENABLEMENT: &[&str] = &[
     "tool_suggest",
     "tool_call_mcp_elicitation",
     "realtime_conversation",
+    "workspace_dependencies",
 ];
 
 #[async_trait]

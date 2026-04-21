@@ -172,8 +172,8 @@ fn load_marketplace_accepts_marketplace_root_directory() {
     )
     .unwrap();
 
-    let marketplace = load_marketplace(&AbsolutePathBuf::try_from(repo_root.clone()).unwrap())
-        .unwrap();
+    let marketplace =
+        load_marketplace(&AbsolutePathBuf::try_from(repo_root.clone()).unwrap()).unwrap();
 
     assert_eq!(marketplace.name, "codex-curated");
     assert_eq!(marketplace.plugins.len(), 1);

@@ -84,6 +84,38 @@ fn text_mentions_skill_handles_many_dollars_without_looping() {
 }
 
 #[test]
+fn text_mentions_plain_name_requires_exact_boundary() {
+    assert_eq!(
+        true,
+        text_mentions_plain_name(
+            "use apple-appdev-workflow:apple-review-orchestrator please",
+            "apple-appdev-workflow:apple-review-orchestrator"
+        )
+    );
+    assert_eq!(
+        true,
+        text_mentions_plain_name(
+            "(apple-appdev-workflow:apple-review-orchestrator)",
+            "apple-appdev-workflow:apple-review-orchestrator"
+        )
+    );
+    assert_eq!(
+        false,
+        text_mentions_plain_name(
+            "apple-appdev-workflow:apple-review-orchestrators",
+            "apple-appdev-workflow:apple-review-orchestrator"
+        )
+    );
+    assert_eq!(
+        false,
+        text_mentions_plain_name(
+            "apple-appdev-workflow:apple-review-orchestrator_extra",
+            "apple-appdev-workflow:apple-review-orchestrator"
+        )
+    );
+}
+
+#[test]
 fn extract_tool_mentions_handles_plain_and_linked_mentions() {
     assert_mentions(
         "use $alpha and [$beta](/tmp/beta)",
@@ -144,6 +176,24 @@ fn collect_explicit_skill_mentions_text_respects_skill_order() {
 
     // Text scanning should not change the previous selection ordering semantics.
     assert_eq!(selected, vec![beta, alpha]);
+}
+
+#[test]
+fn collect_explicit_skill_mentions_from_plain_text_name() {
+    let alpha = make_skill(
+        "apple-appdev-workflow:apple-review-orchestrator",
+        "/tmp/review",
+    );
+    let skills = vec![alpha.clone()];
+    let inputs = vec![UserInput::Text {
+        text: "use apple-appdev-workflow:apple-review-orchestrator for this workflow".to_string(),
+        text_elements: Vec::new(),
+    }];
+    let connector_counts = HashMap::new();
+
+    let selected = collect_mentions(&inputs, &skills, &HashSet::new(), &connector_counts);
+
+    assert_eq!(selected, vec![alpha]);
 }
 
 #[test]

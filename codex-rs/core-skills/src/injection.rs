@@ -159,6 +159,15 @@ pub fn collect_explicit_skill_mentions(
                 &mut seen_paths,
                 &mut selected,
             );
+            select_skills_from_plain_text(
+                &selection_context,
+                &blocked_plain_names,
+                &mentioned_names,
+                text,
+                &mut seen_names,
+                &mut seen_paths,
+                &mut selected,
+            );
         }
     }
 
@@ -390,6 +399,54 @@ fn select_skills_from_mentions(
     }
 }
 
+fn select_skills_from_plain_text(
+    selection_context: &SkillSelectionContext<'_>,
+    blocked_plain_names: &HashSet<String>,
+    mentions: &ToolMentions<'_>,
+    text: &str,
+    seen_names: &mut HashSet<String>,
+    seen_paths: &mut HashSet<AbsolutePathBuf>,
+    selected: &mut Vec<SkillMetadata>,
+) {
+    for skill in selection_context.skills {
+        if selection_context
+            .disabled_paths
+            .contains(&skill.path_to_skills_md)
+            || seen_paths.contains(&skill.path_to_skills_md)
+        {
+            continue;
+        }
+
+        if !text_mentions_plain_name(text, skill.name.as_str()) {
+            continue;
+        }
+        if blocked_plain_names.contains(skill.name.as_str())
+            || mentions.names.contains(skill.name.as_str())
+        {
+            continue;
+        }
+
+        let skill_count = selection_context
+            .skill_name_counts
+            .get(skill.name.as_str())
+            .copied()
+            .unwrap_or(0);
+        let connector_count = selection_context
+            .connector_slug_counts
+            .get(&skill.name.to_ascii_lowercase())
+            .copied()
+            .unwrap_or(0);
+        if skill_count != 1 || connector_count != 0 {
+            continue;
+        }
+
+        if seen_names.insert(skill.name.clone()) {
+            seen_paths.insert(skill.path_to_skills_md.clone());
+            selected.push(skill.clone());
+        }
+    }
+}
+
 fn parse_linked_tool_mention<'a>(
     text: &'a str,
     text_bytes: &[u8],
@@ -497,8 +554,30 @@ fn text_mentions_skill(text: &str, skill_name: &str) -> bool {
     false
 }
 
+fn text_mentions_plain_name(text: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+
+    for (start, _) in text.match_indices(name) {
+        let before = text[..start].chars().next_back();
+        let after = text[start + name.len()..].chars().next();
+        if before.is_none_or(|ch| !is_plain_text_name_char(ch))
+            && after.is_none_or(|ch| !is_plain_text_name_char(ch))
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
 fn is_mention_name_char(byte: u8) -> bool {
     matches!(byte, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'-' | b':')
+}
+
+fn is_plain_text_name_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | ':' | '@' | '/' | '\\')
 }
 
 #[cfg(test)]

@@ -284,7 +284,7 @@ async fn experimental_feature_enablement_set_rejects_non_allowlisted_feature() -
         error
             .message
             .contains(
-                "apps, plugins, tool_search, tool_suggest, tool_call_mcp_elicitation, realtime_conversation"
+                "apps, plugins, tool_search, tool_suggest, tool_call_mcp_elicitation, realtime_conversation, workspace_dependencies"
             ),
         "{}",
         error.message
@@ -305,10 +305,24 @@ async fn experimental_feature_enablement_set_accepts_realtime_conversation() -> 
     )
     .await?;
 
-    assert_eq!(
-        actual.enablement.get("realtime_conversation"),
-        Some(&true)
-    );
+    assert_eq!(actual.enablement.get("realtime_conversation"), Some(&true));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn experimental_feature_enablement_set_accepts_workspace_dependencies() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut mcp = McpProcess::new(codex_home.path()).await?;
+    timeout(DEFAULT_TIMEOUT, mcp.initialize()).await??;
+
+    let actual = set_experimental_feature_enablement(
+        &mut mcp,
+        BTreeMap::from([("workspace_dependencies".to_string(), true)]),
+    )
+    .await?;
+
+    assert_eq!(actual.enablement.get("workspace_dependencies"), Some(&true));
 
     Ok(())
 }

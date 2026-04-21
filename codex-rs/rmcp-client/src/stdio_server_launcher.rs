@@ -177,6 +177,8 @@ impl StdioServerLauncher for LocalStdioServerLauncher {
 
 #[cfg(unix)]
 const PROCESS_GROUP_TERM_GRACE_PERIOD: Duration = Duration::from_secs(2);
+#[cfg(unix)]
+const ESRCH_NO_SUCH_PROCESS: i32 = 3;
 
 #[cfg(unix)]
 struct ProcessGroupGuard {
@@ -269,7 +271,9 @@ impl ProcessGroupGuard {
         let should_escalate = match terminate_process_group(process_group_id) {
             Ok(exists) => exists,
             Err(error) => {
-                warn!("Failed to terminate MCP process group {process_group_id}: {error}");
+                if !is_missing_process_group_error(&error) {
+                    warn!("Failed to terminate MCP process group {process_group_id}: {error}");
+                }
                 false
             }
         };
@@ -277,7 +281,9 @@ impl ProcessGroupGuard {
             spawn(move || {
                 sleep(PROCESS_GROUP_TERM_GRACE_PERIOD);
                 if let Err(error) = kill_process_group(process_group_id) {
-                    warn!("Failed to kill MCP process group {process_group_id}: {error}");
+                    if !is_missing_process_group_error(&error) {
+                        warn!("Failed to kill MCP process group {process_group_id}: {error}");
+                    }
                 }
             });
         }
@@ -285,6 +291,11 @@ impl ProcessGroupGuard {
 
     #[cfg(not(unix))]
     fn maybe_terminate_process_group(&self) {}
+}
+
+#[cfg(unix)]
+fn is_missing_process_group_error(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(ESRCH_NO_SUCH_PROCESS))
 }
 
 impl Drop for ProcessGroupGuard {
@@ -452,6 +463,7 @@ mod tests {
     use codex_config::shell_environment;
     use codex_config::types::EnvironmentVariablePattern;
     use codex_config::types::ShellEnvironmentPolicy;
+    use std::io;
 
     #[test]
     fn remote_env_policy_uses_core_env_without_remote_source_vars() {
@@ -518,5 +530,13 @@ mod tests {
             Some("remote-secret")
         );
         assert!(!env.contains_key("UNREQUESTED_SECRET"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_process_group_error_is_treated_as_benign() {
+        let error = io::Error::from_raw_os_error(ESRCH_NO_SUCH_PROCESS);
+
+        assert!(is_missing_process_group_error(&error));
     }
 }

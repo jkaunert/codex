@@ -694,10 +694,8 @@ fn marketplace_root_dir(
 ) -> Result<AbsolutePathBuf, MarketplaceError> {
     let marketplace_path = normalize_marketplace_manifest_path(marketplace_path)?;
     for relative_path in MARKETPLACE_MANIFEST_RELATIVE_PATHS {
-        if let Some(marketplace_root) = marketplace_root_from_layout(
-            marketplace_path.as_path(),
-            relative_path,
-        )
+        if let Some(marketplace_root) =
+            marketplace_root_from_layout(marketplace_path.as_path(), relative_path)
         {
             return AbsolutePathBuf::try_from(marketplace_root)
                 .map_err(|_| invalid_marketplace_layout_error(&marketplace_path));
