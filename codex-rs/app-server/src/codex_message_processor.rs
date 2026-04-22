@@ -7760,7 +7760,6 @@ impl CodexMessageProcessor {
                 message: format!("error creating detached review thread: {err}"),
                 data: None,
             })?;
-
         Self::log_listener_attach_result(
             self.ensure_conversation_listener(
                 thread_id,

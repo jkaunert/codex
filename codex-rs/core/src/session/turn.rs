@@ -27,6 +27,7 @@ use crate::hook_runtime::run_user_prompt_submit_hooks;
 use crate::injection::ToolMentionKind;
 use crate::injection::app_id_from_path;
 use crate::injection::tool_kind_for_path;
+use crate::maybe_collect_desktop_explicit_parent_orchestrator_augmentation;
 use crate::maybe_collect_desktop_top_level_skill_injection;
 use crate::mcp_skill_dependencies::maybe_prompt_and_install_mcp_dependencies;
 use crate::mcp_tool_exposure::build_mcp_tool_exposure;
@@ -218,19 +219,79 @@ pub(crate) async fn run_turn(
         )
     });
     let config = turn_context.config.clone();
-    if mentioned_skills.is_empty() {
-        if let Some(outcome) = skills_outcome.as_ref() {
-            mentioned_skills.extend(maybe_collect_desktop_top_level_skill_injection(
+    let skill_resolution_trace_enabled = config.features.enabled(Feature::SkillResolutionTrace);
+    let explicit_skill_names = mentioned_skills
+        .iter()
+        .map(|skill| skill.name.as_str())
+        .collect::<Vec<_>>();
+    if skill_resolution_trace_enabled {
+        warn!(
+            client_name = turn_context.app_server_client_name.as_deref().unwrap_or("<none>"),
+            cwd = %turn_context.cwd.display(),
+            explicit_skill_count = explicit_skill_names.len(),
+            explicit_skill_names = ?explicit_skill_names,
+            "skill-resolution-trace: explicit mentioned skills resolved"
+        );
+    }
+    if let Some(outcome) = skills_outcome.as_ref() {
+        let desktop_top_level_injection_enabled = config
+            .features
+            .enabled(Feature::DesktopDeterministicTopLevelSkillInjection);
+        if mentioned_skills.is_empty() {
+            let auto_injected_skills = maybe_collect_desktop_top_level_skill_injection(
                 &input,
                 &outcome.skills,
                 &outcome.disabled_paths,
                 turn_context.app_server_client_name.as_deref(),
                 turn_context.cwd.as_path(),
-                config
-                    .features
-                    .enabled(Feature::DesktopDeterministicTopLevelSkillInjection),
-            ));
+                desktop_top_level_injection_enabled,
+            );
+            let auto_injected_skill_names = auto_injected_skills
+                .iter()
+                .map(|skill| skill.name.as_str())
+                .collect::<Vec<_>>();
+            if skill_resolution_trace_enabled {
+                warn!(
+                    auto_injected_skill_count = auto_injected_skill_names.len(),
+                    auto_injected_skill_names = ?auto_injected_skill_names,
+                    "skill-resolution-trace: desktop auto-injection evaluated"
+                );
+            }
+            mentioned_skills.extend(auto_injected_skills);
+        } else {
+            let parent_augmented_skills =
+                maybe_collect_desktop_explicit_parent_orchestrator_augmentation(
+                    &mentioned_skills,
+                    &outcome.skills,
+                    &outcome.disabled_paths,
+                    turn_context.app_server_client_name.as_deref(),
+                    desktop_top_level_injection_enabled,
+                );
+            let parent_augmented_skill_names = parent_augmented_skills
+                .iter()
+                .map(|skill| skill.name.as_str())
+                .collect::<Vec<_>>();
+            if skill_resolution_trace_enabled {
+                warn!(
+                    explicit_skill_count = explicit_skill_names.len(),
+                    parent_augmented_skill_count = parent_augmented_skill_names.len(),
+                    parent_augmented_skill_names = ?parent_augmented_skill_names,
+                    "skill-resolution-trace: explicit parent augmentation evaluated"
+                );
+            }
+            mentioned_skills.splice(0..0, parent_augmented_skills);
         }
+    }
+    let final_mentioned_skill_names = mentioned_skills
+        .iter()
+        .map(|skill| skill.name.as_str())
+        .collect::<Vec<_>>();
+    if skill_resolution_trace_enabled {
+        warn!(
+            final_skill_count = final_mentioned_skill_names.len(),
+            final_skill_names = ?final_mentioned_skill_names,
+            "skill-resolution-trace: final mentioned skills before payload injection"
+        );
     }
     if config
         .features
@@ -264,6 +325,7 @@ pub(crate) async fn run_turn(
         Some(&session_telemetry),
         &sess.services.analytics_events_client,
         tracking.clone(),
+        skill_resolution_trace_enabled,
     )
     .await;
 

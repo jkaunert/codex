@@ -13,6 +13,7 @@ pub mod system;
 
 pub use env_var_dependencies::SkillDependencyInfo;
 pub use env_var_dependencies::collect_env_var_dependencies;
+pub use experimental_auto_injection::maybe_collect_desktop_explicit_parent_orchestrator_augmentation;
 pub use experimental_auto_injection::maybe_collect_desktop_top_level_skill_injection;
 pub(crate) use invocation_utils::build_implicit_skill_path_indexes;
 pub use invocation_utils::detect_implicit_skill_invocation_for_command;

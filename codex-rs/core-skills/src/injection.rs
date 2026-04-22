@@ -16,6 +16,7 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::user_input::UserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_plugins::mention_syntax::TOOL_MENTION_SIGIL;
+use tracing::warn;
 
 #[derive(Debug, Default)]
 pub struct SkillInjections {
@@ -29,9 +30,22 @@ pub async fn build_skill_injections(
     otel: Option<&SessionTelemetry>,
     analytics_client: &AnalyticsEventsClient,
     tracking: TrackEventsContext,
+    trace_enabled: bool,
 ) -> SkillInjections {
     if mentioned_skills.is_empty() {
         return SkillInjections::default();
+    }
+
+    if trace_enabled {
+        let mentioned_skill_names = mentioned_skills
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>();
+        warn!(
+            skill_count = mentioned_skill_names.len(),
+            skill_names = ?mentioned_skill_names,
+            "skill-resolution-trace: building skill payload injections"
+        );
     }
 
     let mut result = SkillInjections {
