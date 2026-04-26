@@ -211,9 +211,9 @@ fn collect_explicit_skill_mentions_text_respects_skill_order() {
 }
 
 #[test]
-fn collect_explicit_skill_mentions_from_plain_text_name() {
+fn collect_explicit_skill_mentions_ignores_unadorned_plain_text_name() {
     let alpha = make_skill("alpha-skill", "/tmp/alpha");
-    let skills = vec![alpha.clone()];
+    let skills = vec![alpha];
     let inputs = vec![UserInput::Text {
         text: "please use alpha-skill".to_string(),
         text_elements: Vec::new(),
@@ -222,11 +222,11 @@ fn collect_explicit_skill_mentions_from_plain_text_name() {
 
     let selected = collect_mentions(&inputs, &skills, &HashSet::new(), &connector_counts);
 
-    assert_eq!(selected, vec![alpha]);
+    assert_eq!(selected, Vec::new());
 }
 
 #[test]
-fn collect_explicit_skill_mentions_from_plain_text_plugin_skill_base_name() {
+fn collect_explicit_skill_mentions_requires_dollar_fully_qualified_plugin_skill_name() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let alpha = make_plugin_skill(
         &tempdir,
@@ -235,19 +235,33 @@ fn collect_explicit_skill_mentions_from_plain_text_plugin_skill_base_name() {
         "apple-app-orchestrator",
     );
     let skills = vec![alpha.clone()];
-    let inputs = vec![UserInput::Text {
-        text: "use apple-app-orchestrator for this workflow".to_string(),
-        text_elements: Vec::new(),
-    }];
     let connector_counts = HashMap::new();
 
-    let selected = collect_mentions(&inputs, &skills, &HashSet::new(), &connector_counts);
+    let base_name_selected = collect_mentions(
+        &[UserInput::Text {
+            text: "use $apple-app-orchestrator for this workflow".to_string(),
+            text_elements: Vec::new(),
+        }],
+        &skills,
+        &HashSet::new(),
+        &connector_counts,
+    );
+    let fq_name_selected = collect_mentions(
+        &[UserInput::Text {
+            text: "use $sample:apple-app-orchestrator for this workflow".to_string(),
+            text_elements: Vec::new(),
+        }],
+        &skills,
+        &HashSet::new(),
+        &connector_counts,
+    );
 
-    assert_eq!(selected, vec![alpha]);
+    assert_eq!(base_name_selected, Vec::new());
+    assert_eq!(fq_name_selected, vec![alpha]);
 }
 
 #[test]
-fn collect_explicit_skill_mentions_skips_ambiguous_plain_text_plugin_skill_base_name() {
+fn collect_explicit_skill_mentions_ignores_unadorned_plugin_skill_base_name() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let alpha = make_plugin_skill(
         &tempdir,

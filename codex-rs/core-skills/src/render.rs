@@ -23,10 +23,10 @@ pub const SKILL_DESCRIPTIONS_REMOVED_WARNING_PREFIX: &str =
     "Warning: Exceeded skills context budget. All skill descriptions were removed and";
 pub const SKILLS_INTRO_WITH_ABSOLUTE_PATHS: &str = "A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and file path so you can open the source for full instructions when using a specific skill.";
 pub const SKILLS_INTRO_WITH_ALIASES: &str = "A skill is a set of local instructions to follow that is stored in a `SKILL.md` file. Below is the list of skills that can be used. Each entry includes a name, description, and a short path that can be expanded into an absolute path using the skill roots table.";
-pub const EXPLICIT_ONLY_SKILLS_INTRO: &str = "These skills are available in this session but are not eligible for automatic task matching. Use them only when the user names them explicitly, selects them directly, or another active skill/instruction explicitly routes through them.";
+pub const EXPLICIT_ONLY_SKILLS_INTRO: &str = "These skills are available in this session but are not eligible for automatic task matching. Use them only when the user invokes them with `$SkillName`, selects them directly, or another active skill/instruction explicitly routes through them.";
 pub const SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS: &str = r###"- Discovery: The lists above are the skills available in this session (name + description + file path). Skill bodies live on disk at the listed paths.
-- Trigger rules for available skills: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
-- Trigger rules for explicit-only skills: Use them only when the user names them directly, selects them through a structured skill mention, or another active skill/instruction explicitly tells you to route through them.
+- Trigger rules for available skills: If the user names an available skill OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple named skills mean use them all. Do not carry skills across turns unless re-mentioned.
+- Trigger rules for explicit-only skills: Use them only when the user invokes them with `$SkillName`, selects them through a structured skill mention, or another active skill/instruction explicitly tells you to route through them.
 - Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.
 - How to use a skill (progressive disclosure):
   1) After deciding to use a skill, open its `SKILL.md`. Read only enough to follow the workflow.
@@ -43,8 +43,8 @@ pub const SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS: &str = r###"- Discovery: The li
   - When variants exist (frameworks, providers, domains), pick only the relevant reference file(s) and note that choice.
 - Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue."###;
 pub const SKILLS_HOW_TO_USE_WITH_ALIASES: &str = r###"- Discovery: The lists above are the skills available in this session (name + description + short path). Skill bodies live on disk at the listed paths after expanding the matching alias from `### Skill roots`.
-- Trigger rules for available skills: If the user names a skill (with `$SkillName` or plain text) OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
-- Trigger rules for explicit-only skills: Use them only when the user names them directly, selects them through a structured skill mention, or another active skill/instruction explicitly tells you to route through them.
+- Trigger rules for available skills: If the user names an available skill OR the task clearly matches a skill's description shown above, you must use that skill for that turn. Multiple named skills mean use them all. Do not carry skills across turns unless re-mentioned.
+- Trigger rules for explicit-only skills: Use them only when the user invokes them with `$SkillName`, selects them through a structured skill mention, or another active skill/instruction explicitly tells you to route through them.
 - Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.
 - How to use a skill (progressive disclosure):
   1) After deciding to use a skill, expand the listed short `path` with the matching alias from `### Skill roots`, then open its `SKILL.md`. Read only enough to follow the workflow.

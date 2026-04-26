@@ -166,7 +166,7 @@ async fn build_apps_enabled_plugin_test_codex(
 use codex_features::Feature;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn user_turn_includes_skill_instructions_for_plain_text_name() -> Result<()> {
+async fn user_turn_includes_skill_instructions_for_dollar_skill_name() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -190,7 +190,7 @@ async fn user_turn_includes_skill_instructions_for_plain_text_name() -> Result<(
     test.codex
         .submit(Op::UserTurn {
             items: vec![UserInput::Text {
-                text: "please use demo for this task".to_string(),
+                text: "please use $demo for this task".to_string(),
                 text_elements: Vec::new(),
             }],
             final_output_json_schema: None,

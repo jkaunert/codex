@@ -46,5 +46,5 @@ Top-level constraints:
 - `dependencies.tools[].url`: MCP server URL when `type` is `mcp`.
 - `policy.allow_implicit_invocation`: When false, the skill is not eligible for
   implicit task matching by default. It still appears in the session's
-  explicit-only skill catalog and can be invoked explicitly via `$skill` or an
-  unambiguous plain-text skill name. Defaults to true.
+  explicit-only skill catalog and can be invoked explicitly via `$skill`.
+  Defaults to true.
