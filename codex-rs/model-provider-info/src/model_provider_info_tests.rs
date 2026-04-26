@@ -441,7 +441,7 @@ refresh_interval_ms = 0
 }
 
 #[test]
-fn test_default_stream_idle_timeout_is_thirty_seconds() {
+fn test_default_stream_idle_timeout_is_five_minutes() {
     let provider = ModelProviderInfo {
         name: "Example".into(),
         base_url: None,
@@ -462,5 +462,5 @@ fn test_default_stream_idle_timeout_is_thirty_seconds() {
         supports_websockets: false,
     };
 
-    assert_eq!(provider.stream_idle_timeout(), Duration::from_secs(30));
+    assert_eq!(provider.stream_idle_timeout(), Duration::from_secs(300));
 }
