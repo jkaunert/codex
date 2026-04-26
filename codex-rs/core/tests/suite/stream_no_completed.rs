@@ -526,9 +526,9 @@ async fn fail_fast_reports_last_visible_message_across_no_progress_retries() {
     let mut failure_message = None;
     wait_for_event(&codex, |event| match event {
         EventMsg::Error(error)
-            if error
-                .message
-                .contains("after emitting visible commentary/output but still never completed the answer") =>
+            if error.message.contains(
+                "after emitting visible commentary/output but still never completed the answer",
+            ) =>
         {
             failure_message = Some(error.message.clone());
             true
@@ -614,9 +614,9 @@ async fn fails_fast_after_repeated_commentary_only_retries_without_progress() {
     let mut failure_message = None;
     wait_for_event(&codex, |event| match event {
         EventMsg::Error(error)
-            if error
-                .message
-                .contains("after emitting visible commentary/output but still never completed the answer") =>
+            if error.message.contains(
+                "after emitting visible commentary/output but still never completed the answer",
+            ) =>
         {
             failure_message = Some(error.message.clone());
             true
@@ -714,9 +714,9 @@ async fn fails_fast_after_repeated_commentary_plus_reasoning_retries_without_pro
     let mut failure_message = None;
     wait_for_event(&codex, |event| match event {
         EventMsg::Error(error)
-            if error
-                .message
-                .contains("after emitting visible commentary/output but still never completed the answer") =>
+            if error.message.contains(
+                "after emitting visible commentary/output but still never completed the answer",
+            ) =>
         {
             failure_message = Some(error.message.clone());
             true
@@ -769,7 +769,10 @@ async fn resets_no_progress_loop_when_retry_branch_improves_to_visible_commentar
         chunk(ev_response_created("resp-final")),
         chunk(ev_message_item_added("msg-final", "")),
         chunk(ev_output_text_delta("final after improved retry")),
-        chunk(ev_message_item_done("msg-final", "final after improved retry")),
+        chunk(ev_message_item_done(
+            "msg-final",
+            "final after improved retry",
+        )),
         chunk(ev_completed("resp-final")),
     ];
 
@@ -888,9 +891,9 @@ async fn websocket_first_reconnect_reuses_partial_response_id_after_partial_prog
     let mut failure_message = None;
     wait_for_event(&codex, |event| match event {
         EventMsg::Error(error)
-            if error
-                .message
-                .contains("after emitting visible commentary/output but still never completed the answer") =>
+            if error.message.contains(
+                "after emitting visible commentary/output but still never completed the answer",
+            ) =>
         {
             failure_message = Some(error.message.clone());
             true
@@ -906,7 +909,11 @@ async fn websocket_first_reconnect_reuses_partial_response_id_after_partial_prog
     );
 
     let connections = server.connections();
-    assert_eq!(connections.len(), 3, "expected initial socket plus two reconnects");
+    assert_eq!(
+        connections.len(),
+        3,
+        "expected initial socket plus two reconnects"
+    );
     assert_eq!(
         connections[0].len(),
         2,
@@ -925,7 +932,9 @@ async fn websocket_first_reconnect_reuses_partial_response_id_after_partial_prog
 
     let initial_main_request = connections[0][1].body_json();
     assert!(
-        initial_main_request["previous_response_id"].as_str().is_some(),
+        initial_main_request["previous_response_id"]
+            .as_str()
+            .is_some(),
         "expected first real websocket request after warmup to be incremental: {initial_main_request}"
     );
 
@@ -991,9 +1000,9 @@ async fn fails_fast_after_repeated_visible_heading_output_without_completion() {
     let mut failure_message = None;
     wait_for_event(&codex, |event| match event {
         EventMsg::Error(error)
-            if error
-                .message
-                .contains("after emitting visible commentary/output but still never completed the answer") =>
+            if error.message.contains(
+                "after emitting visible commentary/output but still never completed the answer",
+            ) =>
         {
             failure_message = Some(error.message.clone());
             true
@@ -1078,7 +1087,10 @@ async fn websocket_partial_resume_rejection_retries_fresh() {
     let partial_resume = connections[1][0].body_json();
     let fresh_fallback = connections[2][0].body_json();
 
-    assert_eq!(partial_resume["previous_response_id"].as_str(), Some("resp-1"));
+    assert_eq!(
+        partial_resume["previous_response_id"].as_str(),
+        Some("resp-1")
+    );
     assert_eq!(partial_resume["input"], serde_json::json!([]));
     assert!(fresh_fallback["previous_response_id"].is_null());
 

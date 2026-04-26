@@ -29,6 +29,7 @@ use crate::hook_runtime::run_user_prompt_submit_hooks;
 use crate::injection::ToolMentionKind;
 use crate::injection::app_id_from_path;
 use crate::injection::tool_kind_for_path;
+use crate::maybe_collect_desktop_top_level_skill_injection;
 use crate::mcp_skill_dependencies::maybe_prompt_and_install_mcp_dependencies;
 use crate::mcp_tool_exposure::build_mcp_tool_exposure;
 use crate::mentions::build_connector_slug_counts;
@@ -36,7 +37,6 @@ use crate::mentions::build_skill_name_counts;
 use crate::mentions::collect_explicit_app_ids;
 use crate::mentions::collect_explicit_plugin_mentions;
 use crate::mentions::collect_tool_mentions_from_messages;
-use crate::maybe_collect_desktop_top_level_skill_injection;
 use crate::parse_turn_item;
 use crate::plugins::build_plugin_injections;
 use crate::resolve_skill_dependencies_for_turn;
@@ -1136,7 +1136,10 @@ async fn run_sampling_request(
                 let no_progress_retry_tier = progress.no_progress_retry_tier();
                 let reset_no_progress_counter = matches!(
                     (last_no_progress_retry_tier, no_progress_retry_tier),
-                    (Some(NoProgressRetryTier::Empty), NoProgressRetryTier::VisibleOnly)
+                    (
+                        Some(NoProgressRetryTier::Empty),
+                        NoProgressRetryTier::VisibleOnly
+                    )
                 );
                 if consecutive_no_progress_retries == 0 || reset_no_progress_counter {
                     consecutive_no_progress_retries = 1;
@@ -1182,7 +1185,11 @@ async fn run_sampling_request(
                 if consecutive_no_progress_retries >= NO_PROGRESS_RETRY_LOOP_THRESHOLD {
                     let last_message = last_visible_message_across_no_progress_retries
                         .clone()
-                        .or_else(|| progress.last_visible_assistant_message().map(str::to_string))
+                        .or_else(|| {
+                            progress
+                                .last_visible_assistant_message()
+                                .map(str::to_string)
+                        })
                         .unwrap_or_else(|| "no assistant message emitted".to_string());
                     return Err(
                         if last_visible_message_across_no_progress_retries.is_some()
@@ -1508,7 +1515,9 @@ impl SamplingAttemptProgress {
             ResponseItem::CustomToolCallOutput { .. } => {
                 self.note_substantive_kind("custom_tool_call_output")
             }
-            ResponseItem::ToolSearchOutput { .. } => self.note_substantive_kind("tool_search_output"),
+            ResponseItem::ToolSearchOutput { .. } => {
+                self.note_substantive_kind("tool_search_output")
+            }
             ResponseItem::WebSearchCall { .. } => self.note_substantive_kind("web_search_call"),
             ResponseItem::ImageGenerationCall { .. } => {
                 self.note_substantive_kind("image_generation_call")
@@ -2432,7 +2441,7 @@ async fn try_run_sampling_request(
                     {
                         Ok(output_result) => output_result,
                         Err(err) => break Err(SamplingRequestError::Codex(err)),
-                };
+                    };
                 if let Some(tool_future) = output_result.tool_future {
                     attempt_progress.note_tool_future();
                     in_flight.push_back(tool_future);

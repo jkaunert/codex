@@ -1453,8 +1453,8 @@ async fn responses_websocket_v2_creates_with_previous_response_id_on_prefix() {
     let mut provider = websocket_provider(&server);
     provider.stream_max_retries = Some(2);
     provider.stream_idle_timeout_ms = Some(50);
-    let harness = websocket_harness_with_provider_options(provider, /*runtime_metrics_enabled*/ true)
-        .await;
+    let harness =
+        websocket_harness_with_provider_options(provider, /*runtime_metrics_enabled*/ true).await;
     let mut session = harness.client.new_session();
     let prompt_one = prompt_with_input(vec![message_item("hello")]);
     let prompt_two = prompt_with_input(vec![

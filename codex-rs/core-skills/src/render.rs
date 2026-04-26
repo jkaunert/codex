@@ -389,9 +389,7 @@ fn render_skill_lines_from_lines(
         );
         let (truncated_description_chars, truncated_description_count) =
             sum_description_truncation(&rendered);
-        let included = rendered
-            .into_iter()
-            .collect::<Vec<_>>();
+        let included = rendered.into_iter().collect::<Vec<_>>();
 
         return (
             included,
@@ -977,15 +975,17 @@ fn ordered_aliased_skill_lines_for_sections<'a>(
             )
         })
         .collect::<Vec<_>>();
-    lines.extend(ordered_skills_for_budget(explicit_only_skills).into_iter().map(
-        |skill| {
-            SkillLine::with_path_and_section(
-                skill,
-                render_skill_path_with_aliases(skill, plan),
-                SkillLineSection::ExplicitOnly,
-            )
-        },
-    ));
+    lines.extend(
+        ordered_skills_for_budget(explicit_only_skills)
+            .into_iter()
+            .map(|skill| {
+                SkillLine::with_path_and_section(
+                    skill,
+                    render_skill_path_with_aliases(skill, plan),
+                    SkillLineSection::ExplicitOnly,
+                )
+            }),
+    );
     lines
 }
 

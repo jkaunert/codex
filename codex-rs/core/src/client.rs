@@ -859,7 +859,9 @@ impl Drop for ModelClientSession {
 
 impl ModelClientSession {
     fn next_http_request_attempt_seq(&self) -> u64 {
-        self.http_request_attempt_seq.fetch_add(1, Ordering::Relaxed) + 1
+        self.http_request_attempt_seq
+            .fetch_add(1, Ordering::Relaxed)
+            + 1
     }
 
     fn http_transport_reason(&self) -> &'static str {
