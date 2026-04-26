@@ -938,6 +938,7 @@ fn available_skills_cost(budget: SkillMetadataBudget, available: &AvailableSkill
         .saturating_add(lines_cost(budget, &available.explicit_only_skill_lines))
 }
 
+#[cfg(test)]
 fn ordered_absolute_skill_lines(skills: &[SkillMetadata]) -> Vec<SkillLine<'_>> {
     ordered_skills_for_budget(skills)
         .into_iter()
