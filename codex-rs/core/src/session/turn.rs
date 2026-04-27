@@ -513,6 +513,7 @@ async fn build_skills_and_plugins(
             &user_input,
             &skills_outcome.skills,
             &skills_outcome.disabled_paths,
+            &loaded_plugins.effective_router_selections(),
             turn_context.app_server_client_name.as_deref(),
             turn_context.cwd.as_path(),
             turn_context
