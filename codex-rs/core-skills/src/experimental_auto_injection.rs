@@ -419,7 +419,7 @@ mod tests {
         let tempdir = TempDir::new().expect("tempdir");
         let skill_path =
             AbsolutePathBuf::try_from(tempdir.path().join("SKILL.md")).expect("absolute path");
-        let skills = vec![make_skill(PRIMARY_TARGET_SKILL, &skill_path)];
+        let skills = vec![make_skill(APPLE_TARGET_SKILL, &skill_path)];
         let inputs = vec![UserInput::Text {
             text: "Check whether axios bios and mission text should route.".to_string(),
             text_elements: Vec::new(),
@@ -429,6 +429,7 @@ mod tests {
             &inputs,
             &skills,
             &HashSet::new(),
+            &[apple_router_selection(APPLE_TARGET_SKILL)],
             Some("desktop-client"),
             tempdir.path(),
             /*enabled*/ true,
@@ -442,7 +443,7 @@ mod tests {
         let tempdir = TempDir::new().expect("tempdir");
         let skill_path =
             AbsolutePathBuf::try_from(tempdir.path().join("SKILL.md")).expect("absolute path");
-        let skills = vec![make_skill(PRIMARY_TARGET_SKILL, &skill_path)];
+        let skills = vec![make_skill(APPLE_TARGET_SKILL, &skill_path)];
         let inputs = vec![UserInput::Text {
             text: "Review iOS26 adoption risk.".to_string(),
             text_elements: Vec::new(),
@@ -452,6 +453,7 @@ mod tests {
             &inputs,
             &skills,
             &HashSet::new(),
+            &[apple_router_selection(APPLE_TARGET_SKILL)],
             Some("desktop-client"),
             tempdir.path(),
             /*enabled*/ true,
