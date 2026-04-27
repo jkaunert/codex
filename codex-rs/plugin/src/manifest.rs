@@ -1,4 +1,5 @@
 use codex_config::HooksFile;
+use crate::PluginRouterSelection;
 
 /// Parsed plugin metadata parameterized by its resource locator representation.
 ///
@@ -12,6 +13,7 @@ pub struct PluginManifest<Resource> {
     pub keywords: Vec<String>,
     pub paths: PluginManifestPaths<Resource>,
     pub interface: Option<PluginManifestInterface<Resource>>,
+    pub router_selection: Option<PluginRouterSelection>,
 }
 
 /// Component resources declared by a plugin manifest.
@@ -99,6 +101,7 @@ impl<Resource> PluginManifest<Resource> {
             keywords,
             paths,
             interface,
+            router_selection,
         } = self;
         let PluginManifestPaths {
             skills,
@@ -178,6 +181,7 @@ impl<Resource> PluginManifest<Resource> {
                 hooks,
             },
             interface,
+            router_selection,
         })
     }
 }
