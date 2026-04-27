@@ -27,6 +27,7 @@ use crate::hook_runtime::run_turn_stop_hooks;
 use crate::injection::ToolMentionKind;
 use crate::injection::app_id_from_path;
 use crate::injection::tool_kind_for_path;
+use crate::maybe_collect_desktop_top_level_skill_injection;
 use crate::mcp_skill_dependencies::maybe_prompt_and_install_mcp_dependencies;
 use crate::mcp_tool_exposure::build_mcp_tool_exposure;
 use crate::mentions::build_connector_slug_counts;
