@@ -67,7 +67,25 @@ fn write_apple_orchestrator_plugin(home: &TempDir) {
     std::fs::write(
         plugin_root.join(".codex-plugin/plugin.json"),
         format!(
-            r#"{{"name":"{APPLE_PLUGIN_DISPLAY_NAME}","description":"broad Apple workflow routing"}}"#
+            r#"{{
+  "name": "{APPLE_PLUGIN_DISPLAY_NAME}",
+  "description": "broad Apple workflow routing",
+  "routerSelection": {{
+    "schemaVersion": 1,
+    "hostScopes": ["desktop"],
+    "domains": [
+      {{
+        "promptSignals": ["ios", "swiftui"],
+        "workspaceFiles": ["Package.swift"],
+        "workspaceExtensions": ["xcodeproj", "xcworkspace"],
+        "select": "apple-appdev-workflow:apple-app-orchestrator"
+      }}
+    ],
+    "suppression": {{
+      "whenExplicitSkillSelected": true
+    }}
+  }}
+}}"#
         ),
     )
     .expect("write plugin manifest");
