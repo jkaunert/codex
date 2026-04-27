@@ -1,4 +1,7 @@
 use codex_config::HooksFile;
+use codex_plugin::PluginRouterSelection;
+use codex_plugin::PluginRouterSelectionDomain;
+use codex_plugin::PluginRouterSelectionSuppression;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_plugins::find_plugin_manifest_path;
 use serde::Deserialize;
@@ -32,6 +35,8 @@ struct RawPluginManifest {
     hooks: Option<RawPluginManifestHooks>,
     #[serde(default)]
     interface: Option<RawPluginManifestInterface>,
+    #[serde(default)]
+    router_selection: Option<RawPluginRouterSelection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +47,7 @@ pub struct PluginManifest {
     pub keywords: Vec<String>,
     pub paths: PluginManifestPaths,
     pub interface: Option<PluginManifestInterface>,
+    pub router_selection: Option<PluginRouterSelection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,6 +119,39 @@ struct RawPluginManifestInterface {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawPluginRouterSelection {
+    #[serde(default)]
+    schema_version: Option<u64>,
+    #[serde(default)]
+    host_scopes: Vec<String>,
+    #[serde(default)]
+    domains: Vec<RawPluginRouterSelectionDomain>,
+    #[serde(default)]
+    suppression: Option<RawPluginRouterSelectionSuppression>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawPluginRouterSelectionDomain {
+    #[serde(default)]
+    prompt_signals: Vec<String>,
+    #[serde(default)]
+    workspace_files: Vec<String>,
+    #[serde(default)]
+    workspace_extensions: Vec<String>,
+    #[serde(default)]
+    select: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawPluginRouterSelectionSuppression {
+    #[serde(default)]
+    when_explicit_skill_selected: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(untagged)]
 enum RawPluginManifestDefaultPrompt {
     String(String),
@@ -152,6 +191,7 @@ pub fn load_plugin_manifest(plugin_root: &Path) -> Option<PluginManifest> {
                 apps,
                 hooks,
                 interface,
+                router_selection,
             } = manifest;
             let name = plugin_root
                 .file_name()
@@ -248,6 +288,7 @@ pub fn load_plugin_manifest(plugin_root: &Path) -> Option<PluginManifest> {
                     hooks: resolve_manifest_hooks(plugin_root, hooks),
                 },
                 interface,
+                router_selection: resolve_router_selection(plugin_root, router_selection),
             })
         }
         Err(err) => {
@@ -296,6 +337,94 @@ fn resolve_interface_asset_path(
     path: Option<&str>,
 ) -> Option<AbsolutePathBuf> {
     resolve_manifest_path(plugin_root, field, path)
+}
+
+fn resolve_router_selection(
+    plugin_root: &Path,
+    raw: Option<RawPluginRouterSelection>,
+) -> Option<PluginRouterSelection> {
+    let raw = raw?;
+    if raw.schema_version != Some(1) {
+        warn_invalid_router_selection(plugin_root, "schemaVersion must be 1");
+        return None;
+    }
+
+    let host_scopes = non_empty_strings(raw.host_scopes);
+    if host_scopes.is_empty() {
+        warn_invalid_router_selection(plugin_root, "hostScopes must contain at least one entry");
+        return None;
+    }
+
+    let domains = raw
+        .domains
+        .into_iter()
+        .filter_map(|domain| resolve_router_selection_domain(plugin_root, domain))
+        .collect::<Vec<_>>();
+    if domains.is_empty() {
+        warn_invalid_router_selection(plugin_root, "domains must contain at least one valid entry");
+        return None;
+    }
+
+    let suppression = raw
+        .suppression
+        .map(|suppression| PluginRouterSelectionSuppression {
+            when_explicit_skill_selected: suppression.when_explicit_skill_selected.unwrap_or(true),
+        })
+        .unwrap_or_default();
+
+    Some(PluginRouterSelection {
+        host_scopes,
+        domains,
+        suppression,
+    })
+}
+
+fn resolve_router_selection_domain(
+    plugin_root: &Path,
+    raw: RawPluginRouterSelectionDomain,
+) -> Option<PluginRouterSelectionDomain> {
+    let select = raw.select.trim().to_string();
+    let prompt_signals = non_empty_strings(raw.prompt_signals);
+    let workspace_files = non_empty_strings(raw.workspace_files);
+    let workspace_extensions = non_empty_strings(raw.workspace_extensions);
+
+    if select.is_empty() {
+        warn_invalid_router_selection(plugin_root, "domain.select must not be empty");
+        return None;
+    }
+    if prompt_signals.is_empty() && workspace_files.is_empty() && workspace_extensions.is_empty() {
+        warn_invalid_router_selection(
+            plugin_root,
+            "domain must define promptSignals, workspaceFiles, or workspaceExtensions",
+        );
+        return None;
+    }
+
+    Some(PluginRouterSelectionDomain {
+        prompt_signals,
+        workspace_files,
+        workspace_extensions,
+        select,
+    })
+}
+
+fn non_empty_strings(values: Vec<String>) -> Vec<String> {
+    values
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn warn_invalid_router_selection(plugin_root: &Path, message: &str) {
+    if let Some(manifest_path) = find_plugin_manifest_path(plugin_root) {
+        tracing::warn!(
+            path = %manifest_path.display(),
+            "ignoring routerSelection: {message}"
+        );
+    } else {
+        tracing::warn!("ignoring routerSelection: {message}");
+    }
 }
 
 fn resolve_default_prompts(
@@ -442,6 +571,8 @@ mod tests {
     use super::MAX_DEFAULT_PROMPT_LEN;
     use super::PluginManifest;
     use super::load_plugin_manifest;
+    use codex_plugin::PluginRouterSelectionDomain;
+    use codex_plugin::PluginRouterSelectionSuppression;
     use pretty_assertions::assert_eq;
     use std::fs;
     use std::path::Path;
@@ -497,6 +628,56 @@ mod tests {
         assert_eq!(
             interface.default_prompt,
             Some(vec!["Summarize my inbox".to_string()])
+        );
+    }
+
+    #[test]
+    fn plugin_manifest_parses_router_selection_metadata() {
+        let tmp = tempdir().expect("tempdir");
+        let plugin_root = tmp.path().join("demo-plugin");
+        fs::create_dir_all(plugin_root.join(".codex-plugin")).expect("create manifest dir");
+        fs::write(
+            plugin_root.join(".codex-plugin/plugin.json"),
+            r#"{
+  "name": "demo-plugin",
+  "routerSelection": {
+    "schemaVersion": 1,
+    "hostScopes": ["desktop"],
+    "domains": [
+      {
+        "promptSignals": ["kubernetes"],
+        "workspaceFiles": ["kustomization.yaml"],
+        "workspaceExtensions": ["tf"],
+        "select": "infra-workflow:infra-orchestrator"
+      }
+    ],
+    "suppression": {
+      "whenExplicitSkillSelected": false
+    }
+  }
+}"#,
+        )
+        .expect("write manifest");
+
+        let router_selection = load_manifest(&plugin_root)
+            .router_selection
+            .expect("router selection");
+
+        assert_eq!(vec!["desktop".to_string()], router_selection.host_scopes);
+        assert_eq!(
+            vec![PluginRouterSelectionDomain {
+                prompt_signals: vec!["kubernetes".to_string()],
+                workspace_files: vec!["kustomization.yaml".to_string()],
+                workspace_extensions: vec!["tf".to_string()],
+                select: "infra-workflow:infra-orchestrator".to_string(),
+            }],
+            router_selection.domains
+        );
+        assert_eq!(
+            PluginRouterSelectionSuppression {
+                when_explicit_skill_selected: false,
+            },
+            router_selection.suppression
         );
     }
 
