@@ -1160,28 +1160,6 @@ async fn run_sampling_request(
                         "stream stalled after an output item was created but before durable visible output arrived"
                     );
                 }
-                if early_output_item_stall
-                    && consecutive_early_output_item_stalls
-                        >= EARLY_OUTPUT_ITEM_STALL_FALLBACK_THRESHOLD
-                    && client_session.try_switch_fallback_transport(
-                        &turn_context.session_telemetry,
-                        &turn_context.model_info,
-                    )
-                {
-                    sess.send_event(
-                        &turn_context,
-                        EventMsg::Warning(WarningEvent {
-                            message: "Falling back from WebSockets to HTTPS transport after repeated early stream stalls.".to_string(),
-                        }),
-                    )
-                    .await;
-                    retries = 0;
-                    consecutive_no_progress_retries = 0;
-                    consecutive_early_output_item_stalls = 0;
-                    last_no_progress_retry_tier = None;
-                    last_visible_message_across_no_progress_retries = None;
-                    continue;
-                }
                 if consecutive_no_progress_retries >= NO_PROGRESS_RETRY_LOOP_THRESHOLD {
                     let last_message = last_visible_message_across_no_progress_retries
                         .clone()
@@ -1456,7 +1434,6 @@ struct SamplingRequestResult {
 }
 
 const NO_PROGRESS_RETRY_LOOP_THRESHOLD: usize = 3;
-const EARLY_OUTPUT_ITEM_STALL_FALLBACK_THRESHOLD: usize = 2;
 
 #[derive(Clone, Debug, Default)]
 struct SamplingAttemptProgress {
