@@ -232,6 +232,7 @@ pub(crate) async fn run_turn(
             &input,
             &outcome.skills,
             &outcome.disabled_paths,
+            &loaded_plugins.effective_router_selections(),
             turn_context.app_server_client_name.as_deref(),
             turn_context.cwd.as_path(),
             config
