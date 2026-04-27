@@ -54,6 +54,7 @@ fn environment_descriptor_binds_every_manifest_resource() {
             screenshots: vec![path_uri(&screenshot)],
             ..PluginManifestInterface::default()
         }),
+        router_selection: None,
     };
 
     let plugin = ResolvedPlugin::from_environment(
@@ -94,6 +95,7 @@ fn environment_descriptor_binds_every_manifest_resource() {
                 screenshots: vec![resource("executor-1", &screenshot)],
                 ..PluginManifestInterface::default()
             }),
+            router_selection: None,
         }
     );
 }
@@ -115,6 +117,7 @@ fn environment_descriptor_rejects_resources_outside_package_root() {
             hooks: None,
         },
         interface: None,
+        router_selection: None,
     };
 
     let err = ResolvedPlugin::from_environment(
