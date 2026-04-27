@@ -9,25 +9,6 @@ use codex_protocol::user_input::UserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
 
 const DESKTOP_CLIENT_SIGNAL: &str = "desktop";
-const PRIMARY_TARGET_SKILL: &str = "apple-appdev-workflow:apple-app-orchestrator";
-const FALLBACK_TARGET_SKILL: &str = "apple-app-orchestrator";
-const APPLE_PROMPT_SIGNALS: &[&str] = &[
-    "ios",
-    "macos",
-    "swiftui",
-    "swiftdata",
-    "uikit",
-    "appkit",
-    "xcode",
-    "xcodebuild",
-    "testflight",
-    "bundle id",
-    "app store",
-    "core data",
-    "apple app",
-];
-const APPLE_WORKSPACE_MARKERS: &[&str] = &["Package.swift"];
-const APPLE_WORKSPACE_EXTENSIONS: &[&str] = &["xcodeproj", "xcworkspace"];
 
 /// Experimental desktop-only deterministic top-level skill injection.
 ///
@@ -35,7 +16,7 @@ const APPLE_WORKSPACE_EXTENSIONS: &[&str] = &["xcodeproj", "xcworkspace"];
 /// - off unless explicitly enabled by config
 /// - scoped to desktop-like app-server clients
 /// - only activates when no explicit skill already resolved upstream
-/// - injects at most one top-level Apple orchestrator skill
+/// - injects at most one manifest-configured top-level router skill
 pub fn maybe_collect_desktop_top_level_skill_injection(
     inputs: &[UserInput],
     skills: &[SkillMetadata],
@@ -61,19 +42,7 @@ pub fn maybe_collect_desktop_top_level_skill_injection(
         return configured_injections;
     }
 
-    if !has_apple_prompt_signal(inputs) && !has_apple_workspace_signal(cwd) {
-        return Vec::new();
-    }
-
-    skills
-        .iter()
-        .find(|skill| {
-            !disabled_paths.contains(&skill.path_to_skills_md)
-                && matches_target_skill_name(skill.name.as_str())
-        })
-        .cloned()
-        .into_iter()
-        .collect()
+    Vec::new()
 }
 
 fn collect_manifest_router_selection_injections(
@@ -172,22 +141,6 @@ fn is_desktop_client(client_name: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
-fn has_apple_prompt_signal(inputs: &[UserInput]) -> bool {
-    inputs.iter().any(|input| match input {
-        UserInput::Text { text, .. } => {
-            let lowered = text.to_ascii_lowercase();
-            APPLE_PROMPT_SIGNALS
-                .iter()
-                .any(|signal| text_contains_prompt_signal(&lowered, signal))
-        }
-        UserInput::Image { .. }
-        | UserInput::LocalImage { .. }
-        | UserInput::Skill { .. }
-        | UserInput::Mention { .. }
-        | _ => false,
-    })
-}
-
 fn text_contains_prompt_signal(text: &str, signal: &str) -> bool {
     text.match_indices(signal).any(|(start, _)| {
         let before = text[..start].chars().next_back();
@@ -207,38 +160,14 @@ fn is_prompt_signal_boundary(ch: char) -> bool {
     !ch.is_ascii_alphanumeric()
 }
 
-fn has_apple_workspace_signal(cwd: &Path) -> bool {
-    let Ok(entries) = fs::read_dir(cwd) else {
-        return false;
-    };
-
-    entries.flatten().any(|entry| {
-        let path = entry.path();
-        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
-            return false;
-        };
-        if APPLE_WORKSPACE_MARKERS.contains(&name) {
-            return true;
-        }
-        path.extension()
-            .and_then(|value| value.to_str())
-            .map(|ext| APPLE_WORKSPACE_EXTENSIONS.contains(&ext))
-            .unwrap_or(false)
-    })
-}
-
-fn matches_target_skill_name(name: &str) -> bool {
-    name == PRIMARY_TARGET_SKILL
-        || name == FALLBACK_TARGET_SKILL
-        || name.ends_with(":apple-app-orchestrator")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use codex_protocol::protocol::SkillScope;
     use pretty_assertions::assert_eq;
     use tempfile::TempDir;
+
+    const APPLE_TARGET_SKILL: &str = "apple-appdev-workflow:apple-app-orchestrator";
 
     fn make_skill(name: &str, path: &AbsolutePathBuf) -> SkillMetadata {
         SkillMetadata {
@@ -266,12 +195,25 @@ mod tests {
         }
     }
 
+    fn apple_router_selection(select: &str) -> PluginRouterSelection {
+        PluginRouterSelection {
+            host_scopes: vec!["desktop".to_string()],
+            domains: vec![PluginRouterSelectionDomain {
+                prompt_signals: vec!["ios".to_string(), "swiftui".to_string()],
+                workspace_files: vec!["Package.swift".to_string()],
+                workspace_extensions: vec!["xcodeproj".to_string(), "xcworkspace".to_string()],
+                select: select.to_string(),
+            }],
+            ..PluginRouterSelection::default()
+        }
+    }
+
     #[test]
-    fn desktop_client_with_apple_prompt_injects_top_level_orchestrator() {
+    fn desktop_client_with_apple_prompt_requires_router_selection_metadata() {
         let tempdir = TempDir::new().expect("tempdir");
         let skill_path =
             AbsolutePathBuf::try_from(tempdir.path().join("SKILL.md")).expect("absolute path");
-        let skills = vec![make_skill(PRIMARY_TARGET_SKILL, &skill_path)];
+        let skills = vec![make_skill(APPLE_TARGET_SKILL, &skill_path)];
         let inputs = vec![UserInput::Text {
             text: "Create a new iOS SwiftUI app.".to_string(),
             text_elements: Vec::new(),
@@ -287,13 +229,7 @@ mod tests {
             /*enabled*/ true,
         );
 
-        assert_eq!(
-            vec![PRIMARY_TARGET_SKILL.to_string()],
-            injected
-                .into_iter()
-                .map(|skill| skill.name)
-                .collect::<Vec<_>>()
-        );
+        assert!(injected.is_empty());
     }
 
     #[test]
@@ -301,7 +237,7 @@ mod tests {
         let tempdir = TempDir::new().expect("tempdir");
         let skill_path =
             AbsolutePathBuf::try_from(tempdir.path().join("SKILL.md")).expect("absolute path");
-        let skills = vec![make_skill(PRIMARY_TARGET_SKILL, &skill_path)];
+        let skills = vec![make_skill(APPLE_TARGET_SKILL, &skill_path)];
         let inputs = vec![UserInput::Text {
             text: "Create a new iOS SwiftUI app.".to_string(),
             text_elements: Vec::new(),
@@ -311,7 +247,7 @@ mod tests {
             &inputs,
             &skills,
             &HashSet::new(),
-            &[],
+            &[apple_router_selection(APPLE_TARGET_SKILL)],
             Some("codex-tui"),
             tempdir.path(),
             /*enabled*/ true,
@@ -325,7 +261,7 @@ mod tests {
         let tempdir = TempDir::new().expect("tempdir");
         let skill_path =
             AbsolutePathBuf::try_from(tempdir.path().join("SKILL.md")).expect("absolute path");
-        let skills = vec![make_skill(PRIMARY_TARGET_SKILL, &skill_path)];
+        let skills = vec![make_skill(APPLE_TARGET_SKILL, &skill_path)];
         let inputs = vec![UserInput::Text {
             text: "Audit this UIKit screen.".to_string(),
             text_elements: Vec::new(),
@@ -335,7 +271,7 @@ mod tests {
             &inputs,
             &skills,
             &HashSet::new(),
-            &[],
+            &[apple_router_selection(APPLE_TARGET_SKILL)],
             Some("desktop-client"),
             tempdir.path(),
             /*enabled*/ false,
@@ -351,7 +287,7 @@ mod tests {
             AbsolutePathBuf::try_from(tempdir.path().join("SKILL.md")).expect("absolute path");
         let package_swift = tempdir.path().join("Package.swift");
         fs::write(&package_swift, "// marker").expect("write package marker");
-        let skills = vec![make_skill(PRIMARY_TARGET_SKILL, &skill_path)];
+        let skills = vec![make_skill(APPLE_TARGET_SKILL, &skill_path)];
         let inputs = vec![UserInput::Text {
             text: "Review the current branch diff for bugs.".to_string(),
             text_elements: Vec::new(),
@@ -361,7 +297,7 @@ mod tests {
             &inputs,
             &skills,
             &HashSet::new(),
-            &[],
+            &[apple_router_selection(APPLE_TARGET_SKILL)],
             Some("desktop-client"),
             tempdir.path(),
             /*enabled*/ true,
@@ -375,7 +311,7 @@ mod tests {
         let tempdir = TempDir::new().expect("tempdir");
         let skill_path =
             AbsolutePathBuf::try_from(tempdir.path().join("SKILL.md")).expect("absolute path");
-        let skills = vec![make_skill(PRIMARY_TARGET_SKILL, &skill_path)];
+        let skills = vec![make_skill(APPLE_TARGET_SKILL, &skill_path)];
         let inputs = vec![UserInput::Text {
             text: "Create a new macOS SwiftUI app.".to_string(),
             text_elements: Vec::new(),
@@ -386,7 +322,7 @@ mod tests {
             &inputs,
             &skills,
             &disabled_paths,
-            &[],
+            &[apple_router_selection(APPLE_TARGET_SKILL)],
             Some("desktop-client"),
             tempdir.path(),
             /*enabled*/ true,
