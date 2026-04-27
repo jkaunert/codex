@@ -2761,6 +2761,7 @@ dependencies = [
  "codex-login",
  "codex-model-provider",
  "codex-otel",
+ "codex-plugin",
  "codex-protocol",
  "codex-shell-command",
  "codex-skills",
