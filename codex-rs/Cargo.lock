@@ -2499,6 +2499,7 @@ dependencies = [
  "codex-login",
  "codex-model-provider",
  "codex-otel",
+ "codex-plugin",
  "codex-protocol",
  "codex-skills",
  "codex-utils-absolute-path",

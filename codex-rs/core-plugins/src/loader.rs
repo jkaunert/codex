@@ -475,6 +475,7 @@ async fn load_plugin(
         skill_roots: Vec::new(),
         disabled_skill_paths: HashSet::new(),
         has_enabled_skills: false,
+        router_selection: None,
         mcp_servers: HashMap::new(),
         apps: Vec::new(),
         error: None,
@@ -518,6 +519,7 @@ async fn load_plugin(
         .map(str::to_string)
         .or_else(|| Some(manifest.name.clone()));
     loaded_plugin.manifest_description = manifest.description.clone();
+    loaded_plugin.router_selection = manifest.router_selection.clone();
     loaded_plugin.skill_roots = plugin_skill_roots(&plugin_root, manifest_paths);
     let resolved_skills = load_plugin_skills(
         &plugin_root,

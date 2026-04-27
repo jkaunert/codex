@@ -21,6 +21,8 @@ use codex_core_plugins::loader::refresh_non_curated_plugin_cache_force_reinstall
 use codex_core_plugins::marketplace::MarketplacePluginInstallPolicy;
 use codex_core_plugins::startup_sync::curated_plugins_repo_path;
 use codex_login::CodexAuth;
+use codex_plugin::PluginRouterSelectionDomain;
+use codex_plugin::PluginRouterSelectionSuppression;
 use codex_protocol::protocol::Product;
 use codex_utils_absolute_path::test_support::PathBufExt;
 use pretty_assertions::assert_eq;
@@ -121,6 +123,65 @@ async fn load_plugins_from_config(config_toml: &str, codex_home: &Path) -> Plugi
         .await
 }
 
+#[tokio::test]
+async fn load_plugins_preserves_router_selection_metadata() {
+    let codex_home = TempDir::new().unwrap();
+    let plugin_root = codex_home
+        .path()
+        .join("plugins/cache")
+        .join("test/sample/local");
+
+    write_file(
+        &plugin_root.join(".codex-plugin/plugin.json"),
+        r#"{
+  "name": "sample",
+  "routerSelection": {
+    "schemaVersion": 1,
+    "hostScopes": ["desktop"],
+    "domains": [
+      {
+        "promptSignals": ["kubernetes"],
+        "workspaceFiles": ["kustomization.yaml"],
+        "workspaceExtensions": ["tf"],
+        "select": "infra-workflow:infra-orchestrator"
+      }
+    ],
+    "suppression": {
+      "whenExplicitSkillSelected": false
+    }
+  }
+}"#,
+    );
+
+    let outcome = load_plugins_from_config(
+        &plugin_config_toml(/*enabled*/ true, /*plugins_feature_enabled*/ true),
+        codex_home.path(),
+    )
+    .await;
+    let router_selections = outcome.effective_router_selections();
+
+    assert_eq!(1, router_selections.len());
+    assert_eq!(
+        vec!["desktop".to_string()],
+        router_selections[0].host_scopes
+    );
+    assert_eq!(
+        vec![PluginRouterSelectionDomain {
+            prompt_signals: vec!["kubernetes".to_string()],
+            workspace_files: vec!["kustomization.yaml".to_string()],
+            workspace_extensions: vec!["tf".to_string()],
+            select: "infra-workflow:infra-orchestrator".to_string(),
+        }],
+        router_selections[0].domains
+    );
+    assert_eq!(
+        PluginRouterSelectionSuppression {
+            when_explicit_skill_selected: false,
+        },
+        router_selections[0].suppression
+    );
+}
+
 async fn load_config(codex_home: &Path, cwd: &Path) -> crate::config::Config {
     ConfigBuilder::default()
         .codex_home(codex_home.to_path_buf())
@@ -194,6 +255,7 @@ async fn load_plugins_loads_default_skills_and_mcp_servers() {
             skill_roots: vec![plugin_root.join("skills").abs()],
             disabled_skill_paths: HashSet::new(),
             has_enabled_skills: true,
+            router_selection: None,
             mcp_servers: HashMap::from([(
                 "sample".to_string(),
                 McpServerConfig {
@@ -717,6 +779,7 @@ async fn load_plugins_preserves_disabled_plugins_without_effective_contributions
             skill_roots: Vec::new(),
             disabled_skill_paths: HashSet::new(),
             has_enabled_skills: false,
+            router_selection: None,
             mcp_servers: HashMap::new(),
             apps: Vec::new(),
             error: None,
@@ -834,6 +897,7 @@ fn capability_index_filters_inactive_and_zero_capability_plugins() {
         skill_roots: Vec::new(),
         disabled_skill_paths: HashSet::new(),
         has_enabled_skills: false,
+        router_selection: None,
         mcp_servers: HashMap::new(),
         apps: Vec::new(),
         error: None,
