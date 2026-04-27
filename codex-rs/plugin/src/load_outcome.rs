@@ -6,6 +6,7 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use crate::AppConnectorId;
 use crate::PluginCapabilitySummary;
 use crate::PluginHookSource;
+use crate::PluginRouterSelection;
 
 const MAX_CAPABILITY_SUMMARY_DESCRIPTION_LEN: usize = 1024;
 
@@ -20,6 +21,7 @@ pub struct LoadedPlugin<M> {
     pub skill_roots: Vec<AbsolutePathBuf>,
     pub disabled_skill_paths: HashSet<AbsolutePathBuf>,
     pub has_enabled_skills: bool,
+    pub router_selection: Option<PluginRouterSelection>,
     pub mcp_servers: HashMap<String, M>,
     pub apps: Vec<AppConnectorId>,
     pub hook_sources: Vec<PluginHookSource>,
@@ -156,6 +158,14 @@ impl<M: Clone> PluginLoadOutcome<M> {
             .iter()
             .filter(|plugin| plugin.is_active())
             .flat_map(|plugin| plugin.hook_load_warnings.iter().cloned())
+            .collect()
+    }
+
+    pub fn effective_router_selections(&self) -> Vec<PluginRouterSelection> {
+        self.plugins
+            .iter()
+            .filter(|plugin| plugin.is_active())
+            .filter_map(|plugin| plugin.router_selection.clone())
             .collect()
     }
 
