@@ -25,6 +25,7 @@ const ROUTING_SCOPE_DOMAIN: &str = "domain";
 /// - injects at most one manifest-configured top-level router skill
 pub fn maybe_collect_desktop_top_level_skill_injection(
     inputs: &[UserInput],
+    explicit_skills: &[SkillMetadata],
     skills: &[SkillMetadata],
     disabled_paths: &HashSet<AbsolutePathBuf>,
     router_selections: &[PluginRouterSelection],
@@ -38,6 +39,7 @@ pub fn maybe_collect_desktop_top_level_skill_injection(
 
     let configured_injections = collect_manifest_router_selection_injections(
         inputs,
+        explicit_skills,
         skills,
         disabled_paths,
         router_selections,
@@ -53,6 +55,7 @@ pub fn maybe_collect_desktop_top_level_skill_injection(
 
 fn collect_manifest_router_selection_injections(
     inputs: &[UserInput],
+    explicit_skills: &[SkillMetadata],
     skills: &[SkillMetadata],
     disabled_paths: &HashSet<AbsolutePathBuf>,
     router_selections: &[PluginRouterSelection],
@@ -72,7 +75,7 @@ fn collect_manifest_router_selection_injections(
             }
 
             if config.suppression.when_explicit_skill_selected {
-                match explicit_skill_router_decision(inputs, &domain.select) {
+                match explicit_skill_router_decision(inputs, explicit_skills, &domain.select) {
                     ExplicitSkillRouterDecision::NoExplicitSkill
                     | ExplicitSkillRouterDecision::AllowParentInjection => {}
                     ExplicitSkillRouterDecision::OwnerAlreadySelected
@@ -101,6 +104,7 @@ enum ExplicitSkillRouterDecision {
 
 fn explicit_skill_router_decision(
     inputs: &[UserInput],
+    explicit_skills: &[SkillMetadata],
     selected_owner: &str,
 ) -> ExplicitSkillRouterDecision {
     let mut saw_compatible_route_skill = false;
@@ -117,6 +121,24 @@ fn explicit_skill_router_decision(
         }
 
         if explicit_skill_allows_parent_injection(name, path, selected_owner) {
+            saw_compatible_route_skill = true;
+        } else {
+            return ExplicitSkillRouterDecision::SuppressParentInjection;
+        }
+    }
+
+    for skill in explicit_skills {
+        saw_explicit_skill = true;
+
+        if same_skill_identity(&skill.name, selected_owner) {
+            return ExplicitSkillRouterDecision::OwnerAlreadySelected;
+        }
+
+        if explicit_skill_allows_parent_injection(
+            &skill.name,
+            skill.path_to_skills_md.as_path(),
+            selected_owner,
+        ) {
             saw_compatible_route_skill = true;
         } else {
             return ExplicitSkillRouterDecision::SuppressParentInjection;
@@ -394,8 +416,18 @@ mod tests {
         skills: &[SkillMetadata],
         cwd: &Path,
     ) -> Vec<String> {
+        injected_apple_skill_names_with_explicit(inputs, &[], skills, cwd)
+    }
+
+    fn injected_apple_skill_names_with_explicit(
+        inputs: &[UserInput],
+        explicit_skills: &[SkillMetadata],
+        skills: &[SkillMetadata],
+        cwd: &Path,
+    ) -> Vec<String> {
         maybe_collect_desktop_top_level_skill_injection(
             inputs,
+            explicit_skills,
             skills,
             &HashSet::new(),
             &[apple_router_selection(APPLE_TARGET_SKILL)],
@@ -421,6 +453,7 @@ mod tests {
 
         let injected = maybe_collect_desktop_top_level_skill_injection(
             &inputs,
+            &[],
             &skills,
             &HashSet::new(),
             &[],
@@ -445,6 +478,7 @@ mod tests {
 
         let injected = maybe_collect_desktop_top_level_skill_injection(
             &inputs,
+            &[],
             &skills,
             &HashSet::new(),
             &[apple_router_selection(APPLE_TARGET_SKILL)],
@@ -469,6 +503,7 @@ mod tests {
 
         let injected = maybe_collect_desktop_top_level_skill_injection(
             &inputs,
+            &[],
             &skills,
             &HashSet::new(),
             &[apple_router_selection(APPLE_TARGET_SKILL)],
@@ -495,6 +530,7 @@ mod tests {
 
         let injected = maybe_collect_desktop_top_level_skill_injection(
             &inputs,
+            &[],
             &skills,
             &HashSet::new(),
             &[apple_router_selection(APPLE_TARGET_SKILL)],
@@ -608,6 +644,7 @@ mod tests {
 
         let injected = maybe_collect_desktop_top_level_skill_injection(
             &inputs,
+            &[],
             &skills,
             &HashSet::new(),
             &[apple_router_selection(APPLE_TARGET_SKILL)],
@@ -638,6 +675,7 @@ mod tests {
 
         let injected = maybe_collect_desktop_top_level_skill_injection(
             &inputs,
+            &[],
             &skills,
             &HashSet::new(),
             &[apple_router_selection(APPLE_TARGET_SKILL)],
@@ -675,6 +713,7 @@ mod tests {
 
         let injected = maybe_collect_desktop_top_level_skill_injection(
             &inputs,
+            &[],
             &skills,
             &HashSet::new(),
             &[apple_router_selection(APPLE_TARGET_SKILL)],
@@ -718,6 +757,7 @@ mod tests {
 
         let injected = maybe_collect_desktop_top_level_skill_injection(
             &inputs,
+            &[],
             &skills,
             &HashSet::new(),
             &[apple_router_selection(APPLE_TARGET_SKILL)],
@@ -732,6 +772,74 @@ mod tests {
                 .into_iter()
                 .map(|skill| skill.name)
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn resolved_domain_route_skill_preserves_parent_owner_injection() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let owner_path = AbsolutePathBuf::try_from(tempdir.path().join("owner/SKILL.md"))
+            .expect("absolute path");
+        let review_path = AbsolutePathBuf::try_from(tempdir.path().join("review/SKILL.md"))
+            .expect("absolute path");
+        write_skill_with_route_metadata(
+            review_path.as_path(),
+            APPLE_REVIEW_SKILL,
+            "brigade-orchestrator",
+            "domain",
+        );
+        let owner_skills = vec![make_skill(APPLE_TARGET_SKILL, &owner_path)];
+        let explicit_skills = vec![make_skill(APPLE_REVIEW_SKILL, &review_path)];
+        let inputs = vec![UserInput::Text {
+            text: format!(
+                "[${APPLE_REVIEW_SKILL}]({}) review this iOS branch diff.",
+                review_path.display()
+            ),
+            text_elements: Vec::new(),
+        }];
+
+        assert_eq!(
+            vec![APPLE_TARGET_SKILL.to_string()],
+            injected_apple_skill_names_with_explicit(
+                &inputs,
+                &explicit_skills,
+                &owner_skills,
+                tempdir.path()
+            )
+        );
+    }
+
+    #[test]
+    fn resolved_focused_specialist_suppresses_parent_owner_injection() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let owner_path = AbsolutePathBuf::try_from(tempdir.path().join("owner/SKILL.md"))
+            .expect("absolute path");
+        let decision_path = AbsolutePathBuf::try_from(tempdir.path().join("decision/SKILL.md"))
+            .expect("absolute path");
+        write_skill_with_route_metadata(
+            decision_path.as_path(),
+            APPLE_DECISION_STRESS_SKILL,
+            "specialist",
+            "focused",
+        );
+        let owner_skills = vec![make_skill(APPLE_TARGET_SKILL, &owner_path)];
+        let explicit_skills = vec![make_skill(APPLE_DECISION_STRESS_SKILL, &decision_path)];
+        let inputs = vec![UserInput::Text {
+            text: format!(
+                "[${APPLE_DECISION_STRESS_SKILL}]({}) stress test this iOS review decision in isolation.",
+                decision_path.display()
+            ),
+            text_elements: Vec::new(),
+        }];
+
+        assert_eq!(
+            Vec::<String>::new(),
+            injected_apple_skill_names_with_explicit(
+                &inputs,
+                &explicit_skills,
+                &owner_skills,
+                tempdir.path()
+            )
         );
     }
 
@@ -761,6 +869,7 @@ mod tests {
 
         let injected = maybe_collect_desktop_top_level_skill_injection(
             &inputs,
+            &[],
             &skills,
             &HashSet::new(),
             &[apple_router_selection(APPLE_TARGET_SKILL)],
@@ -809,6 +918,7 @@ mod tests {
 
         let injected = maybe_collect_desktop_top_level_skill_injection(
             &inputs,
+            &[],
             &skills,
             &HashSet::new(),
             &[apple_router_selection(APPLE_TARGET_SKILL)],
@@ -844,6 +954,7 @@ mod tests {
 
         let injected = maybe_collect_desktop_top_level_skill_injection(
             &inputs,
+            &[],
             &skills,
             &HashSet::new(),
             &[apple_router_selection(APPLE_TARGET_SKILL)],
@@ -869,6 +980,7 @@ mod tests {
 
         let injected = maybe_collect_desktop_top_level_skill_injection(
             &inputs,
+            &[],
             &skills,
             &disabled_paths,
             &[apple_router_selection(APPLE_TARGET_SKILL)],
@@ -894,6 +1006,7 @@ mod tests {
 
         let injected = maybe_collect_desktop_top_level_skill_injection(
             &inputs,
+            &[],
             &skills,
             &HashSet::new(),
             &[router_selection(skill_name)],
@@ -927,6 +1040,7 @@ mod tests {
 
         let injected = maybe_collect_desktop_top_level_skill_injection(
             &inputs,
+            &[],
             &skills,
             &HashSet::new(),
             &[router_selection(skill_name)],
@@ -952,6 +1066,7 @@ mod tests {
 
         let injected = maybe_collect_desktop_top_level_skill_injection(
             &inputs,
+            &[],
             &skills,
             &HashSet::new(),
             &[router_selection(skill_name)],
@@ -976,6 +1091,7 @@ mod tests {
 
         let injected = maybe_collect_desktop_top_level_skill_injection(
             &inputs,
+            &[],
             &skills,
             &HashSet::new(),
             &[apple_router_selection(APPLE_TARGET_SKILL)],
@@ -1000,6 +1116,7 @@ mod tests {
 
         let injected = maybe_collect_desktop_top_level_skill_injection(
             &inputs,
+            &[],
             &skills,
             &HashSet::new(),
             &[apple_router_selection(APPLE_TARGET_SKILL)],

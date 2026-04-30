@@ -521,6 +521,7 @@ async fn build_skills_and_plugins(
     );
     let top_level_injections = maybe_collect_desktop_top_level_skill_injection(
         input,
+        &explicit_skills,
         &skills_outcome.skills,
         &skills_outcome.disabled_paths,
         &loaded_plugins.effective_router_selections(),
