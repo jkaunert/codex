@@ -5,6 +5,7 @@ use std::sync::atomic::Ordering;
 
 use crate::SkillInjections;
 use crate::SkillLoadOutcome;
+use crate::SkillMetadata;
 use crate::build_skill_injections;
 use crate::client::ModelClientSession;
 use crate::client_common::Prompt;
@@ -217,18 +218,14 @@ pub(crate) async fn run_turn(
             build_skill_name_counts(&outcome.skills, &outcome.disabled_paths).1
         });
     let config = turn_context.config.clone();
-    let mut mentioned_skills = skills_outcome.as_ref().map_or_else(Vec::new, |outcome| {
-        collect_explicit_skill_mentions(
+    let mentioned_skills = skills_outcome.as_ref().map_or_else(Vec::new, |outcome| {
+        let explicit_skills = collect_explicit_skill_mentions(
             &input,
             &outcome.skills,
             &outcome.disabled_paths,
             &connector_slug_counts,
-        )
-    });
-    if mentioned_skills.is_empty()
-        && let Some(outcome) = skills_outcome.as_ref()
-    {
-        mentioned_skills.extend(maybe_collect_desktop_top_level_skill_injection(
+        );
+        let top_level_injections = maybe_collect_desktop_top_level_skill_injection(
             &input,
             &outcome.skills,
             &outcome.disabled_paths,
@@ -238,8 +235,23 @@ pub(crate) async fn run_turn(
             config
                 .features
                 .enabled(Feature::DesktopDeterministicTopLevelSkillInjection),
-        ));
-    }
+        );
+
+        if top_level_injections.is_empty() {
+            return explicit_skills;
+        }
+
+        let mut selected = Vec::with_capacity(top_level_injections.len() + explicit_skills.len());
+        for skill in top_level_injections.into_iter().chain(explicit_skills) {
+            if selected.iter().any(|existing: &SkillMetadata| {
+                existing.name == skill.name || existing.path_to_skills_md == skill.path_to_skills_md
+            }) {
+                continue;
+            }
+            selected.push(skill);
+        }
+        selected
+    });
     if config
         .features
         .enabled(Feature::SkillEnvVarDependencyPrompt)
