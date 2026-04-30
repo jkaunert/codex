@@ -226,6 +226,7 @@ pub(crate) async fn run_turn(
         );
         let top_level_injections = maybe_collect_desktop_top_level_skill_injection(
             &input,
+            &explicit_skills,
             &outcome.skills,
             &outcome.disabled_paths,
             &loaded_plugins.effective_router_selections(),

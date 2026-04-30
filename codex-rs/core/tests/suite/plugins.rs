@@ -34,6 +34,7 @@ const APPLE_PLUGIN_CONFIG_NAME: &str = "apple-workflow@test";
 const APPLE_PLUGIN_DISPLAY_NAME: &str = "apple-appdev-workflow";
 const APPLE_APP_ORCHESTRATOR: &str = "apple-appdev-workflow:apple-app-orchestrator";
 const APPLE_REVIEW_ORCHESTRATOR: &str = "apple-appdev-workflow:apple-review-orchestrator";
+const APPLE_DECISION_STRESS_TEST: &str = "apple-appdev-workflow:apple-decision-stress-test";
 
 fn sample_plugin_root(home: &TempDir) -> std::path::PathBuf {
     home.path().join("plugins/cache/test/sample/local")
@@ -114,6 +115,15 @@ fn write_apple_orchestrator_plugin(home: &TempDir) {
         "---\ndescription: broad Apple review routing\nmetadata:\n  role: brigade-orchestrator\n  routing_scope: domain\n---\n\n# apple review orchestrator body\n",
     )
     .expect("write plugin review skill");
+
+    let decision_skill_dir = plugin_root.join("skills/apple-decision-stress-test");
+    std::fs::create_dir_all(decision_skill_dir.as_path())
+        .expect("create plugin decision stress skill dir");
+    std::fs::write(
+        decision_skill_dir.join("SKILL.md"),
+        "---\ndescription: isolated Apple decision stress test\nmetadata:\n  role: specialist\n  routing_scope: focused\n---\n\n# apple decision stress test body\n",
+    )
+    .expect("write plugin decision stress skill");
 }
 
 fn write_plugin_skill_plugin(home: &TempDir) -> std::path::PathBuf {
@@ -270,6 +280,80 @@ async fn desktop_top_level_skill_injection_prepends_owner_for_explicit_downstrea
     assert!(
         owner_position < review_position,
         "expected top-level owner before explicit downstream route, got {user_texts:?}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn desktop_top_level_skill_injection_keeps_focused_specialist_isolated() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+
+    let codex_home = Arc::new(TempDir::new()?);
+    write_apple_orchestrator_plugin(codex_home.as_ref());
+    let decision_skill_path = std::fs::canonicalize(
+        apple_plugin_root(codex_home.as_ref()).join("skills/apple-decision-stress-test/SKILL.md"),
+    )?;
+
+    let mut builder = test_codex()
+        .with_home(codex_home)
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::DesktopDeterministicTopLevelSkillInjection)
+                .expect("test config should allow feature update");
+        });
+    let test = builder.build(&server).await?;
+
+    test.codex
+        .set_app_server_client_info(Some("desktop-client".to_string()), Some("test".to_string()))
+        .await?;
+
+    test.codex
+        .submit(Op::UserInput {
+            environments: None,
+            items: vec![UserInput::Text {
+                text: format!(
+                    "[${APPLE_DECISION_STRESS_TEST}]({}) stress test this iOS review decision in isolation.",
+                    decision_skill_path.display()
+                ),
+                text_elements: Vec::new(),
+            }],
+            final_output_json_schema: None,
+            responsesapi_client_metadata: None,
+        })
+        .await?;
+
+    wait_for_event(test.codex.as_ref(), |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let request = mock.single_request();
+    let user_texts = request.message_input_texts("user");
+    assert!(
+        user_texts
+            .iter()
+            .any(|text| text.contains(&format!("<name>{APPLE_DECISION_STRESS_TEST}</name>"))),
+        "expected explicit focused specialist injection, got {user_texts:?}"
+    );
+    assert!(
+        user_texts
+            .iter()
+            .all(|text| !text.contains(&format!("<name>{APPLE_APP_ORCHESTRATOR}</name>"))),
+        "expected focused specialist to suppress top-level owner injection, got {user_texts:?}"
     );
 
     Ok(())
