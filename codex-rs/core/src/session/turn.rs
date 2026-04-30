@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use crate::SkillInjections;
+use crate::SkillMetadata;
 use crate::build_skill_injections;
 use crate::client::ModelClientSession;
 use crate::client_common::Prompt;
@@ -27,7 +28,6 @@ use crate::hook_runtime::run_turn_stop_hooks;
 use crate::injection::ToolMentionKind;
 use crate::injection::app_id_from_path;
 use crate::injection::tool_kind_for_path;
-use crate::maybe_collect_desktop_top_level_skill_injection;
 use crate::mcp_skill_dependencies::maybe_prompt_and_install_mcp_dependencies;
 use crate::mcp_tool_exposure::build_mcp_tool_exposure;
 use crate::mentions::build_connector_slug_counts;
@@ -496,26 +496,38 @@ async fn build_skills_and_plugins(
     let connector_slug_counts = build_connector_slug_counts(&available_connectors);
     let skill_name_counts_lower =
         build_skill_name_counts(&skills_outcome.skills, &skills_outcome.disabled_paths).1;
-    let mut mentioned_skills = collect_explicit_skill_mentions(
+    let explicit_skills = collect_explicit_skill_mentions(
         &user_input,
         &skills_outcome.skills,
         &skills_outcome.disabled_paths,
         &connector_slug_counts,
     );
-    if mentioned_skills.is_empty() {
-        mentioned_skills.extend(maybe_collect_desktop_top_level_skill_injection(
-            &user_input,
-            &skills_outcome.skills,
-            &skills_outcome.disabled_paths,
-            &loaded_plugins.effective_router_selections(),
-            turn_context.app_server_client_name.as_deref(),
-            turn_context.cwd.as_path(),
-            turn_context
-                .config
-                .features
-                .enabled(Feature::DesktopDeterministicTopLevelSkillInjection),
-        ));
-    }
+    let top_level_injections = maybe_collect_desktop_top_level_skill_injection(
+        &user_input,
+        &skills_outcome.skills,
+        &skills_outcome.disabled_paths,
+        &loaded_plugins.effective_router_selections(),
+        turn_context.app_server_client_name.as_deref(),
+        turn_context.cwd.as_path(),
+        turn_context
+            .config
+            .features
+            .enabled(Feature::DesktopDeterministicTopLevelSkillInjection),
+    );
+    let mentioned_skills = if top_level_injections.is_empty() {
+        explicit_skills
+    } else {
+        let mut selected = Vec::with_capacity(top_level_injections.len() + explicit_skills.len());
+        for skill in top_level_injections.into_iter().chain(explicit_skills) {
+            if selected.iter().any(|existing: &SkillMetadata| {
+                existing.name == skill.name || existing.path_to_skills_md == skill.path_to_skills_md
+            }) {
+                continue;
+            }
+            selected.push(skill);
+        }
+        selected
+    };
     maybe_prompt_and_install_mcp_dependencies(
         sess,
         turn_context,
