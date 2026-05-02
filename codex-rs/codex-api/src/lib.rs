@@ -8,6 +8,7 @@ pub(crate) mod provider;
 pub(crate) mod rate_limits;
 pub(crate) mod requests;
 pub(crate) mod sse;
+mod stream_lifecycle;
 pub(crate) mod telemetry;
 
 pub use crate::requests::headers::build_conversation_headers;
@@ -63,6 +64,8 @@ pub use crate::provider::RetryConfig;
 pub use crate::provider::is_azure_responses_provider;
 pub use crate::requests::Compression;
 pub use crate::sse::stream_from_fixture;
+pub use crate::stream_lifecycle::ResponseStreamLifecycleOptions;
+pub use crate::stream_lifecycle::ResponseStreamTransport;
 pub use crate::telemetry::SseTelemetry;
 pub use crate::telemetry::WebsocketTelemetry;
 pub use codex_protocol::protocol::RealtimeAudioFrame;
