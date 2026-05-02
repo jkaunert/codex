@@ -7,6 +7,10 @@ use crate::provider::Provider;
 use crate::rate_limits::parse_rate_limit_event;
 use crate::sse::ResponsesStreamEvent;
 use crate::sse::process_responses_event;
+use crate::stream_lifecycle::ResponseStreamLifecycleOptions;
+use crate::stream_lifecycle::ResponseStreamLifecycleRecorder;
+use crate::stream_lifecycle::ResponseStreamTerminalState;
+use crate::stream_lifecycle::finalize_lifecycle_error;
 use crate::telemetry::WebsocketTelemetry;
 use codex_client::TransportError;
 use codex_client::maybe_build_rustls_client_config_with_custom_ca;
@@ -217,6 +221,17 @@ impl ResponsesWebsocketConnection {
         connection_reused: bool,
         turn_state: Option<Arc<OnceLock<String>>>,
     ) -> Result<ResponseStream, ApiError> {
+        self.stream_request_with_lifecycle(request, connection_reused, turn_state, None)
+            .await
+    }
+
+    pub async fn stream_request_with_lifecycle(
+        &self,
+        request: ResponsesWsRequest,
+        connection_reused: bool,
+        turn_state: Option<Arc<OnceLock<String>>>,
+        lifecycle: Option<ResponseStreamLifecycleOptions>,
+    ) -> Result<ResponseStream, ApiError> {
         let (tx_event, rx_event) =
             mpsc::channel::<std::result::Result<ResponseEvent, ApiError>>(1600);
         let stream = Arc::clone(&self.stream);
@@ -266,6 +281,7 @@ impl ResponsesWebsocketConnection {
                         telemetry,
                         connection_reused,
                         turn_state.as_deref(),
+                        lifecycle,
                     )
                     .await
                 };
@@ -634,8 +650,10 @@ async fn run_websocket_response_stream(
     telemetry: Option<Arc<dyn WebsocketTelemetry>>,
     connection_reused: bool,
     turn_state: Option<&OnceLock<String>>,
+    lifecycle: Option<ResponseStreamLifecycleOptions>,
 ) -> Result<(), ApiError> {
     let mut last_server_model: Option<String> = None;
+    let mut lifecycle = lifecycle.map(ResponseStreamLifecycleRecorder::new);
     send_websocket_request(
         ws_stream,
         request_body,
@@ -656,15 +674,27 @@ async fn run_websocket_response_stream(
         let message = match response {
             Ok(Some(Ok(msg))) => msg,
             Ok(Some(Err(err))) => {
-                return Err(ApiError::Stream(err.to_string()));
+                let error = ApiError::Stream(err.to_string());
+                return Err(finalize_lifecycle_error(
+                    &mut lifecycle,
+                    ResponseStreamTerminalState::StreamError,
+                    error,
+                ));
             }
             Ok(None) => {
-                return Err(ApiError::Stream(
-                    "stream closed before response.completed".into(),
+                let error = ApiError::Stream("stream closed before response.completed".into());
+                return Err(finalize_lifecycle_error(
+                    &mut lifecycle,
+                    ResponseStreamTerminalState::ClosedBeforeCompletion,
+                    error,
                 ));
             }
             Err(err) => {
-                return Err(err);
+                return Err(finalize_lifecycle_error(
+                    &mut lifecycle,
+                    ResponseStreamTerminalState::IdleTimeout,
+                    err,
+                ));
             }
         };
 
@@ -692,6 +722,9 @@ async fn run_websocket_response_stream(
                 }
                 let model_verifications = event.model_verifications();
                 let turn_moderation_metadata = event.turn_moderation_metadata();
+                if let Some(lifecycle) = lifecycle.as_mut() {
+                    lifecycle.observe_event(&event);
+                }
                 if event.kind() == "codex.rate_limits" {
                     if let Some(snapshot) = parse_rate_limit_event(&text) {
                         let _ = tx_event.send(Ok(ResponseEvent::RateLimits(snapshot))).await;
@@ -731,21 +764,38 @@ async fn run_websocket_response_stream(
                         let is_completed = matches!(event, ResponseEvent::Completed { .. });
                         let _ = tx_event.send(Ok(event)).await;
                         if is_completed {
+                            if let Some(lifecycle) = lifecycle.as_mut() {
+                                lifecycle.finalize_completed();
+                            }
                             break;
                         }
                     }
                     Ok(None) => {}
                     Err(error) => {
-                        return Err(error.into_api_error());
+                        let error = error.into_api_error();
+                        return Err(finalize_lifecycle_error(
+                            &mut lifecycle,
+                            ResponseStreamTerminalState::StreamError,
+                            error,
+                        ));
                     }
                 }
             }
             Message::Binary(_) => {
-                return Err(ApiError::Stream("unexpected binary websocket event".into()));
+                let error = ApiError::Stream("unexpected binary websocket event".into());
+                return Err(finalize_lifecycle_error(
+                    &mut lifecycle,
+                    ResponseStreamTerminalState::StreamError,
+                    error,
+                ));
             }
             Message::Close(_) => {
-                return Err(ApiError::Stream(
-                    "websocket closed by server before response.completed".into(),
+                let error =
+                    ApiError::Stream("websocket closed by server before response.completed".into());
+                return Err(finalize_lifecycle_error(
+                    &mut lifecycle,
+                    ResponseStreamTerminalState::ClosedBeforeCompletion,
+                    error,
                 ));
             }
             Message::Frame(_) => {}
