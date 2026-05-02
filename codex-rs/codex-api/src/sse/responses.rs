@@ -2,6 +2,10 @@ use crate::common::ResponseEvent;
 use crate::common::ResponseStream;
 use crate::error::ApiError;
 use crate::rate_limits::parse_all_rate_limits;
+use crate::stream_lifecycle::ResponseStreamLifecycleOptions;
+use crate::stream_lifecycle::ResponseStreamLifecycleRecorder;
+use crate::stream_lifecycle::ResponseStreamTerminalState;
+use crate::stream_lifecycle::finalize_lifecycle_error;
 use crate::telemetry::SseTelemetry;
 use codex_client::ByteStream;
 use codex_client::StreamResponse;
@@ -32,6 +36,7 @@ pub fn spawn_response_stream(
     idle_timeout: Duration,
     telemetry: Option<Arc<dyn SseTelemetry>>,
     turn_state: Option<Arc<OnceLock<String>>>,
+    lifecycle: Option<ResponseStreamLifecycleOptions>,
 ) -> ResponseStream {
     let rate_limit_snapshots = parse_all_rate_limits(&stream_response.headers);
     let models_etag = stream_response
@@ -77,7 +82,14 @@ pub fn spawn_response_stream(
                 .send(Ok(ResponseEvent::ServerReasoningIncluded(true)))
                 .await;
         }
-        process_sse(stream_response.bytes, tx_event, idle_timeout, telemetry).await;
+        process_sse(
+            stream_response.bytes,
+            tx_event,
+            idle_timeout,
+            telemetry,
+            lifecycle,
+        )
+        .await;
     });
 
     ResponseStream {
@@ -161,6 +173,13 @@ pub struct ResponsesStreamEvent {
 impl ResponsesStreamEvent {
     pub fn kind(&self) -> &str {
         &self.kind
+    }
+
+    pub(crate) fn response_id(&self) -> Option<&str> {
+        self.response
+            .as_ref()
+            .and_then(|response| response.get("id"))
+            .and_then(Value::as_str)
     }
 
     /// Returns the effective model reported by the server, if present.
@@ -319,7 +338,8 @@ pub fn process_responses_event(
         }
         "response.created" => {
             if event.response.is_some() {
-                return Ok(Some(ResponseEvent::Created {}));
+                let response_id = event.response_id().map(str::to_string);
+                return Ok(Some(ResponseEvent::Created { response_id }));
             }
         }
         "response.failed" => {
@@ -414,10 +434,12 @@ pub async fn process_sse(
     tx_event: mpsc::Sender<Result<ResponseEvent, ApiError>>,
     idle_timeout: Duration,
     telemetry: Option<Arc<dyn SseTelemetry>>,
+    lifecycle: Option<ResponseStreamLifecycleOptions>,
 ) {
     let mut stream = stream.eventsource();
     let mut response_error: Option<ApiError> = None;
     let mut last_server_model: Option<String> = None;
+    let mut lifecycle = lifecycle.map(ResponseStreamLifecycleRecorder::new);
 
     loop {
         let start = Instant::now();
@@ -429,20 +451,35 @@ pub async fn process_sse(
             Ok(Some(Ok(sse))) => sse,
             Ok(Some(Err(e))) => {
                 debug!("SSE Error: {e:#}");
-                let _ = tx_event.send(Err(ApiError::Stream(e.to_string()))).await;
+                let error = ApiError::Stream(e.to_string());
+                let error = finalize_lifecycle_error(
+                    &mut lifecycle,
+                    ResponseStreamTerminalState::StreamError,
+                    error,
+                );
+                let _ = tx_event.send(Err(error)).await;
                 return;
             }
             Ok(None) => {
-                let error = response_error.unwrap_or(ApiError::Stream(
-                    "stream closed before response.completed".into(),
-                ));
+                let error = response_error.unwrap_or_else(|| {
+                    let error = ApiError::Stream("stream closed before response.completed".into());
+                    finalize_lifecycle_error(
+                        &mut lifecycle,
+                        ResponseStreamTerminalState::ClosedBeforeCompletion,
+                        error,
+                    )
+                });
                 let _ = tx_event.send(Err(error)).await;
                 return;
             }
             Err(_) => {
-                let _ = tx_event
-                    .send(Err(ApiError::Stream("idle timeout waiting for SSE".into())))
-                    .await;
+                let error = ApiError::Stream("idle timeout waiting for SSE".into());
+                let error = finalize_lifecycle_error(
+                    &mut lifecycle,
+                    ResponseStreamTerminalState::IdleTimeout,
+                    error,
+                );
+                let _ = tx_event.send(Err(error)).await;
                 return;
             }
         };
@@ -458,6 +495,9 @@ pub async fn process_sse(
         };
         let model_verifications = event.model_verifications();
         let turn_moderation_metadata = event.turn_moderation_metadata();
+        if let Some(lifecycle) = lifecycle.as_mut() {
+            lifecycle.observe_event(&event);
+        }
 
         if let Some(model) = event.response_model()
             && last_server_model.as_deref() != Some(model.as_str())
@@ -495,12 +535,20 @@ pub async fn process_sse(
                     return;
                 }
                 if is_completed {
+                    if let Some(lifecycle) = lifecycle.as_mut() {
+                        lifecycle.finalize_completed();
+                    }
                     return;
                 }
             }
             Ok(None) => {}
             Err(error) => {
-                response_error = Some(error.into_api_error());
+                let error = error.into_api_error();
+                response_error = Some(finalize_lifecycle_error(
+                    &mut lifecycle,
+                    ResponseStreamTerminalState::StreamError,
+                    error,
+                ));
             }
         };
     }
@@ -610,6 +658,7 @@ mod tests {
             tx,
             idle_timeout(),
             /*telemetry*/ None,
+            /*lifecycle*/ None,
         ));
 
         let mut events = Vec::new();
@@ -641,6 +690,7 @@ mod tests {
             tx,
             idle_timeout(),
             /*telemetry*/ None,
+            /*lifecycle*/ None,
         ));
 
         let mut out = Vec::new();
@@ -834,6 +884,7 @@ mod tests {
             tx,
             idle_timeout(),
             /*telemetry*/ None,
+            /*lifecycle*/ None,
         ));
 
         let events = tokio::time::timeout(Duration::from_millis(1000), async {
@@ -992,7 +1043,7 @@ mod tests {
         }
 
         fn is_created(ev: &ResponseEvent) -> bool {
-            matches!(ev, ResponseEvent::Created)
+            matches!(ev, ResponseEvent::Created { .. })
         }
         fn is_output(ev: &ResponseEvent) -> bool {
             matches!(ev, ResponseEvent::OutputItemDone(_))
@@ -1080,6 +1131,7 @@ mod tests {
             idle_timeout(),
             /*telemetry*/ None,
             /*turn_state*/ None,
+            /*lifecycle*/ None,
         );
         assert_eq!(stream.upstream_request_id.as_deref(), Some("req-1"));
         let event = stream
@@ -1120,6 +1172,7 @@ mod tests {
             idle_timeout(),
             /*telemetry*/ None,
             /*turn_state*/ None,
+            /*lifecycle*/ None,
         );
         let mut events = Vec::new();
         while let Some(event) = stream.rx_event.recv().await {
@@ -1154,7 +1207,12 @@ mod tests {
         .await;
 
         assert_eq!(events.len(), 2);
-        assert_matches!(&events[0], ResponseEvent::Created);
+        assert_matches!(
+            &events[0],
+            ResponseEvent::Created {
+                response_id: Some(response_id)
+            } if response_id == "resp-1"
+        );
         assert_matches!(
             &events[1],
             ResponseEvent::Completed {
@@ -1191,7 +1249,12 @@ mod tests {
             &events[0],
             ResponseEvent::ServerModel(model) if model == CYBER_RESTRICTED_MODEL_FOR_TESTS
         );
-        assert_matches!(&events[1], ResponseEvent::Created);
+        assert_matches!(
+            &events[1],
+            ResponseEvent::Created {
+                response_id: Some(response_id)
+            } if response_id == "resp-1"
+        );
         assert_matches!(
             &events[2],
             ResponseEvent::Completed {
