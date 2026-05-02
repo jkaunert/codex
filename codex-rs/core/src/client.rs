@@ -48,6 +48,8 @@ use codex_api::ReasoningContext;
 use codex_api::RequestTelemetry;
 use codex_api::ReqwestTransport;
 use codex_api::ResponseCreateWsRequest;
+use codex_api::ResponseStreamLifecycleOptions;
+use codex_api::ResponseStreamTransport;
 use codex_api::ResponsesApiRequest;
 use codex_api::ResponsesClient as ApiResponsesClient;
 use codex_api::ResponsesOptions as ApiResponsesOptions;
@@ -1402,6 +1404,7 @@ impl ModelClientSession {
         summary: ReasoningSummaryConfig,
         service_tier: Option<String>,
         responses_metadata: &CodexResponsesMetadata,
+        stream_attempt: Option<u64>,
         inference_trace: &InferenceTraceContext,
     ) -> Result<ResponseStream> {
         let auth_manager = self.client.state.provider.auth_manager();
@@ -1458,7 +1461,12 @@ impl ModelClientSession {
                 client_setup.api_auth,
             )
             .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
-            let stream_result = client.stream_request(request, options).await;
+            let lifecycle = stream_attempt.map(|attempt| {
+                ResponseStreamLifecycleOptions::new(attempt, ResponseStreamTransport::ResponsesHttp)
+            });
+            let stream_result = client
+                .stream_request_with_lifecycle(request, options, lifecycle)
+                .await;
 
             match stream_result {
                 Ok(stream) => {
@@ -1531,6 +1539,7 @@ impl ModelClientSession {
         service_tier: Option<String>,
         responses_metadata: &CodexResponsesMetadata,
         warmup: bool,
+        stream_attempt: Option<u64>,
         request_trace: Option<W3cTraceContext>,
         inference_trace: &InferenceTraceContext,
     ) -> Result<WebsocketStreamOutcome> {
@@ -1646,11 +1655,18 @@ impl ModelClientSession {
                         "websocket connection is unavailable".to_string(),
                     ))
                 })?;
+            let lifecycle = stream_attempt.map(|attempt| {
+                ResponseStreamLifecycleOptions::new(
+                    attempt,
+                    ResponseStreamTransport::ResponsesWebsocket,
+                )
+            });
             let stream_result = websocket_connection
-                .stream_request(
+                .stream_request_with_lifecycle(
                     ws_request,
                     self.websocket_session.connection_reused(),
                     Some(Arc::clone(&self.turn_state)),
+                    lifecycle,
                 )
                 .await
                 .map_err(|err| {
@@ -1739,6 +1755,7 @@ impl ModelClientSession {
                 service_tier,
                 responses_metadata,
                 /*warmup*/ true,
+                /*stream_attempt*/ None,
                 current_span_w3c_trace_context(),
                 &disabled_trace,
             )
@@ -1783,6 +1800,33 @@ impl ModelClientSession {
         responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
     ) -> Result<ResponseStream> {
+        self.stream_with_attempt(
+            prompt,
+            model_info,
+            session_telemetry,
+            effort,
+            summary,
+            service_tier,
+            responses_metadata,
+            /*stream_attempt*/ 1,
+            inference_trace,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn stream_with_attempt(
+        &mut self,
+        prompt: &Prompt,
+        model_info: &ModelInfo,
+        session_telemetry: &SessionTelemetry,
+        effort: Option<ReasoningEffortConfig>,
+        summary: ReasoningSummaryConfig,
+        service_tier: Option<String>,
+        responses_metadata: &CodexResponsesMetadata,
+        stream_attempt: u64,
+        inference_trace: &InferenceTraceContext,
+    ) -> Result<ResponseStream> {
         let wire_api = self.client.state.provider.info().wire_api;
         match wire_api {
             WireApi::Responses => {
@@ -1798,6 +1842,7 @@ impl ModelClientSession {
                             service_tier.clone(),
                             responses_metadata,
                             /*warmup*/ false,
+                            Some(stream_attempt),
                             request_trace,
                             inference_trace,
                         )
@@ -1818,6 +1863,7 @@ impl ModelClientSession {
                     summary,
                     service_tier,
                     responses_metadata,
+                    Some(stream_attempt),
                     inference_trace,
                 )
                 .await

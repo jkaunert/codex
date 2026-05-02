@@ -11,6 +11,7 @@ pub(crate) mod requests;
 pub(crate) mod safety_buffering;
 pub(crate) mod search;
 pub(crate) mod sse;
+mod stream_lifecycle;
 pub(crate) mod telemetry;
 
 pub use crate::requests::headers::build_session_headers;
@@ -109,6 +110,8 @@ pub use crate::search::SportsOperation;
 pub use crate::search::SportsToolName;
 pub use crate::search::TimeOperation;
 pub use crate::search::WeatherOperation;
+pub use crate::stream_lifecycle::ResponseStreamLifecycleOptions;
+pub use crate::stream_lifecycle::ResponseStreamTransport;
 pub use crate::telemetry::SseTelemetry;
 pub use crate::telemetry::WebsocketTelemetry;
 pub use codex_protocol::protocol::RealtimeAudioFrame;
