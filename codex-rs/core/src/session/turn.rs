@@ -1105,6 +1105,7 @@ async fn run_sampling_request(
             Arc::clone(&turn_store),
             client_session,
             responses_metadata,
+            retries + 1,
             Arc::clone(&turn_diff_tracker),
             &prompt,
             cancellation_token.child_token(),
@@ -1835,6 +1836,7 @@ async fn try_run_sampling_request(
     turn_store: Arc<codex_extension_api::ExtensionData>,
     client_session: &mut ModelClientSession,
     responses_metadata: &CodexResponsesMetadata,
+    stream_attempt: u64,
     turn_diff_tracker: SharedTurnDiffTracker,
     prompt: &Prompt,
     cancellation_token: CancellationToken,
@@ -1854,7 +1856,7 @@ async fn try_run_sampling_request(
     );
     let sampling_timing_guard = turn_context.turn_timing_state.begin_sampling();
     let mut stream = client_session
-        .stream(
+        .stream_with_attempt(
             prompt,
             &turn_context.model_info,
             &turn_context.session_telemetry,
@@ -1862,6 +1864,7 @@ async fn try_run_sampling_request(
             turn_context.reasoning_summary,
             turn_context.config.service_tier.clone(),
             responses_metadata,
+            stream_attempt,
             &inference_trace,
         )
         .instrument(trace_span!("stream_request"))
@@ -1928,7 +1931,7 @@ async fn try_run_sampling_request(
         record_turn_ttft_metric(&turn_context, &event).await;
 
         match event {
-            ResponseEvent::Created => {}
+            ResponseEvent::Created { .. } => {}
             ResponseEvent::OutputItemDone(item) => {
                 if let Some((_, mut consumer)) = active_tool_argument_diff_consumer.take()
                     && let Ok(Some(event)) = consumer.finish()
