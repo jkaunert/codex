@@ -1287,6 +1287,82 @@ struct SamplingRequestResult {
     last_agent_message: Option<String>,
 }
 
+#[derive(Clone, Debug, Default)]
+struct SamplingAttemptProgress {
+    output_item_added: bool,
+    output_item_done: bool,
+    output_text_delta: bool,
+}
+
+impl SamplingAttemptProgress {
+    fn note_output_item_added(&mut self, _item: &ResponseItem) {
+        self.output_item_added = true;
+    }
+
+    fn note_output_item_done(&mut self, _item: &ResponseItem) {
+        self.output_item_done = true;
+    }
+
+    fn note_streamed_assistant_text(&mut self, visible_text: &str) {
+        if !visible_text.is_empty() {
+            self.output_text_delta = true;
+        }
+    }
+
+    fn has_durable_visible_output(&self) -> bool {
+        self.output_item_done || self.output_text_delta
+    }
+
+    fn stalled_after_output_item_added_without_visible_output(&self) -> bool {
+        self.output_item_added && !self.has_durable_visible_output()
+    }
+
+    fn warn_if_early_output_item_stall(&self) {
+        if self.stalled_after_output_item_added_without_visible_output() {
+            warn!(
+                output_item_added = self.output_item_added,
+                output_item_done = self.output_item_done,
+                output_text_delta = self.output_text_delta,
+                "stream stalled after an output item was created but before durable visible output arrived"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod sampling_attempt_progress_tests {
+    use super::*;
+
+    #[test]
+    fn detects_early_assistant_output_stall() {
+        let mut progress = SamplingAttemptProgress::default();
+        let commentary_item = ResponseItem::Message {
+            id: Some("msg-1".to_string()),
+            role: "assistant".to_string(),
+            content: vec![],
+            phase: Some(MessagePhase::Commentary),
+        };
+
+        progress.note_output_item_added(&commentary_item);
+        assert!(progress.stalled_after_output_item_added_without_visible_output());
+
+        progress.note_streamed_assistant_text("Routing: orchestrator-led");
+        assert!(!progress.stalled_after_output_item_added_without_visible_output());
+
+        let mut completed_progress = SamplingAttemptProgress::default();
+        completed_progress.note_output_item_added(&commentary_item);
+        completed_progress.note_output_item_done(&ResponseItem::Message {
+            id: Some("msg-1".to_string()),
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: "Routing: orchestrator-led".to_string(),
+            }],
+            phase: Some(MessagePhase::Commentary),
+        });
+        assert!(!completed_progress.stalled_after_output_item_added_without_visible_output());
+    }
+}
+
 /// Ephemeral per-response state for streaming a single proposed plan.
 /// This is intentionally not persisted or stored in session/state since it
 /// only exists while a response is actively streaming. The final plan text
@@ -1879,6 +1955,7 @@ async fn try_run_sampling_request(
         FuturesOrdered::new();
     let mut needs_follow_up = false;
     let mut last_agent_message: Option<String> = None;
+    let mut attempt_progress = SamplingAttemptProgress::default();
     let mut active_item: Option<TurnItem> = None;
     let mut active_tool_argument_diff_consumer: Option<(
         String,
@@ -1915,8 +1992,12 @@ async fn try_run_sampling_request(
 
         let event = match event {
             Some(Ok(event)) => event,
-            Some(Err(err)) => break Err(err),
+            Some(Err(err)) => {
+                attempt_progress.warn_if_early_output_item_stall();
+                break Err(err);
+            }
             None => {
+                attempt_progress.warn_if_early_output_item_stall();
                 break Err(CodexErr::Stream(
                     "stream closed before response.completed".into(),
                     None,
@@ -1932,6 +2013,7 @@ async fn try_run_sampling_request(
         match event {
             ResponseEvent::Created => {}
             ResponseEvent::OutputItemDone(item) => {
+                attempt_progress.note_output_item_done(&item);
                 if let Some((_, mut consumer)) = active_tool_argument_diff_consumer.take()
                     && let Ok(Some(event)) = consumer.finish()
                 {
@@ -2014,6 +2096,7 @@ async fn try_run_sampling_request(
                 }
             }
             ResponseEvent::OutputItemAdded(item) => {
+                attempt_progress.note_output_item_added(&item);
                 if let ResponseItem::CustomToolCall { call_id, name, .. } = &item {
                     let tool_name = ToolName::plain(name.as_str());
                     active_tool_argument_diff_consumer = tool_runtime
@@ -2039,6 +2122,7 @@ async fn try_run_sampling_request(
                         let item_id = turn_item.id();
                         let mut seeded =
                             assistant_message_stream_parsers.seed_item_text(&item_id, &raw_text);
+                        attempt_progress.note_streamed_assistant_text(&seeded.visible_text);
                         if let TurnItem::AgentMessage(agent_message) = &mut turn_item {
                             agent_message.content =
                                 vec![codex_protocol::items::AgentMessageContent::Text {
@@ -2143,6 +2227,7 @@ async fn try_run_sampling_request(
                     let item_id = active.id();
                     if matches!(active, TurnItem::AgentMessage(_)) {
                         let parsed = assistant_message_stream_parsers.parse_delta(&item_id, &delta);
+                        attempt_progress.note_streamed_assistant_text(&parsed.visible_text);
                         emit_streamed_assistant_text_delta(
                             &sess,
                             &turn_context,
