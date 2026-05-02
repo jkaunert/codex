@@ -413,9 +413,11 @@ impl ModelClient {
         session_telemetry: &SessionTelemetry,
         _model_info: &ModelInfo,
     ) -> bool {
+        let http_fallback_supported = self.http_fallback_supported();
         let websocket_enabled = self.responses_websocket_enabled();
-        let activated =
-            websocket_enabled && !self.state.disable_websockets.swap(true, Ordering::Relaxed);
+        let activated = http_fallback_supported
+            && websocket_enabled
+            && !self.state.disable_websockets.swap(true, Ordering::Relaxed);
         if activated {
             warn!("falling back to HTTP");
             session_telemetry.counter(
@@ -423,10 +425,34 @@ impl ModelClient {
                 /*inc*/ 1,
                 &[("from_wire_api", "responses_websocket")],
             );
+        } else if websocket_enabled && !http_fallback_supported {
+            warn!(
+                base_url = self
+                    .state
+                    .provider
+                    .info()
+                    .base_url
+                    .as_deref()
+                    .unwrap_or_default(),
+                "skipping HTTP fallback because provider base URL is not HTTP-compatible"
+            );
         }
 
         self.store_cached_websocket_session(WebsocketSession::default());
         activated
+    }
+
+    fn http_fallback_supported(&self) -> bool {
+        self.state
+            .provider
+            .info()
+            .base_url
+            .as_deref()
+            .map_or(true, |base_url| {
+                url::Url::parse(base_url)
+                    .map(|url| matches!(url.scheme(), "http" | "https"))
+                    .unwrap_or(false)
+            })
     }
 
     /// Compacts the current conversation history using the Compact endpoint.
