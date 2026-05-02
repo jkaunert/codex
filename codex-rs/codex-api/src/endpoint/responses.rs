@@ -10,6 +10,7 @@ use crate::requests::headers::build_session_headers;
 use crate::requests::headers::insert_header;
 use crate::requests::headers::subagent_header;
 use crate::sse::spawn_response_stream;
+use crate::stream_lifecycle::ResponseStreamLifecycleOptions;
 use crate::telemetry::SseTelemetry;
 use codex_client::HttpTransport;
 use codex_client::RequestCompression;
@@ -72,6 +73,16 @@ impl<T: HttpTransport> ResponsesClient<T> {
         request: ResponsesApiRequest,
         options: ResponsesOptions,
     ) -> Result<ResponseStream, ApiError> {
+        self.stream_request_with_lifecycle(request, options, None)
+            .await
+    }
+
+    pub async fn stream_request_with_lifecycle(
+        &self,
+        request: ResponsesApiRequest,
+        options: ResponsesOptions,
+        lifecycle: Option<ResponseStreamLifecycleOptions>,
+    ) -> Result<ResponseStream, ApiError> {
         let ResponsesOptions {
             session_id,
             thread_id,
@@ -96,7 +107,8 @@ impl<T: HttpTransport> ResponsesClient<T> {
             insert_header(&mut headers, "x-openai-subagent", &subagent);
         }
 
-        self.stream(body, headers, compression, turn_state).await
+        self.stream_with_lifecycle(body, headers, compression, turn_state, lifecycle)
+            .await
     }
 
     fn path() -> &'static str {
@@ -120,6 +132,24 @@ impl<T: HttpTransport> ResponsesClient<T> {
         extra_headers: HeaderMap,
         compression: Compression,
         turn_state: Option<Arc<OnceLock<String>>>,
+    ) -> Result<ResponseStream, ApiError> {
+        self.stream_with_lifecycle(
+            body,
+            extra_headers,
+            compression,
+            turn_state,
+            /*lifecycle*/ None,
+        )
+        .await
+    }
+
+    pub async fn stream_with_lifecycle(
+        &self,
+        body: Value,
+        extra_headers: HeaderMap,
+        compression: Compression,
+        turn_state: Option<Arc<OnceLock<String>>>,
+        lifecycle: Option<ResponseStreamLifecycleOptions>,
     ) -> Result<ResponseStream, ApiError> {
         let request_compression = match compression {
             Compression::None => RequestCompression::None,
@@ -148,6 +178,7 @@ impl<T: HttpTransport> ResponsesClient<T> {
             self.session.provider().stream_idle_timeout,
             self.sse_telemetry.clone(),
             turn_state,
+            lifecycle,
         ))
     }
 }
