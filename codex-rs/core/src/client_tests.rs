@@ -42,6 +42,13 @@ use tokio::sync::Notify;
 
 fn test_model_client(session_source: SessionSource) -> ModelClient {
     let provider = create_oss_provider_with_base_url("https://example.com/v1", WireApi::Responses);
+    test_model_client_with_provider(session_source, provider)
+}
+
+fn test_model_client_with_provider(
+    session_source: SessionSource,
+    provider: codex_model_provider_info::ModelProviderInfo,
+) -> ModelClient {
     ModelClient::new(
         /*auth_manager*/ None,
         ThreadId::new(),
@@ -53,6 +60,16 @@ fn test_model_client(session_source: SessionSource) -> ModelClient {
         /*include_timing_metrics*/ false,
         /*beta_features_header*/ None,
     )
+}
+
+fn websocket_test_model_client_with_base_url(base_url: Option<&str>) -> ModelClient {
+    let mut provider = create_oss_provider_with_base_url(
+        base_url.unwrap_or("https://example.com/v1"),
+        WireApi::Responses,
+    );
+    provider.base_url = base_url.map(str::to_string);
+    provider.supports_websockets = true;
+    test_model_client_with_provider(SessionSource::Cli, provider)
 }
 
 fn test_model_info() -> ModelInfo {
@@ -98,6 +115,46 @@ fn test_session_telemetry() -> SessionTelemetry {
         "test-terminal".to_string(),
         SessionSource::Cli,
     )
+}
+
+#[test]
+fn force_http_fallback_disables_websockets_for_http_base_urls() {
+    for base_url in ["http://example.com/v1", "https://example.com/v1"] {
+        let client = websocket_test_model_client_with_base_url(Some(base_url));
+
+        assert!(client.responses_websocket_enabled());
+        assert!(client.force_http_fallback(&test_session_telemetry(), &test_model_info()));
+        assert!(!client.responses_websocket_enabled());
+    }
+}
+
+#[test]
+fn force_http_fallback_allows_missing_base_url() {
+    let client = websocket_test_model_client_with_base_url(None);
+
+    assert!(client.responses_websocket_enabled());
+    assert!(client.force_http_fallback(&test_session_telemetry(), &test_model_info()));
+    assert!(!client.responses_websocket_enabled());
+}
+
+#[test]
+fn force_http_fallback_refuses_websocket_only_base_urls() {
+    for base_url in ["ws://example.com/v1", "wss://example.com/v1"] {
+        let client = websocket_test_model_client_with_base_url(Some(base_url));
+
+        assert!(client.responses_websocket_enabled());
+        assert!(!client.force_http_fallback(&test_session_telemetry(), &test_model_info()));
+        assert!(client.responses_websocket_enabled());
+    }
+}
+
+#[test]
+fn force_http_fallback_refuses_malformed_base_urls() {
+    let client = websocket_test_model_client_with_base_url(Some("not a url"));
+
+    assert!(client.responses_websocket_enabled());
+    assert!(!client.force_http_fallback(&test_session_telemetry(), &test_model_info()));
+    assert!(client.responses_websocket_enabled());
 }
 
 fn started_inference_attempt(temp: &TempDir) -> anyhow::Result<InferenceTraceAttempt> {
