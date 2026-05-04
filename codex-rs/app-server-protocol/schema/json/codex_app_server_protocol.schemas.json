@@ -14437,6 +14437,12 @@
           "path": {
             "$ref": "#/definitions/v2/AbsolutePathBuf"
           },
+          "pluginId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "scope": {
             "$ref": "#/definitions/v2/SkillScope"
           },

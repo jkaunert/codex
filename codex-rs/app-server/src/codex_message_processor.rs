@@ -8377,12 +8377,44 @@ fn skills_to_info(
                             .collect(),
                     }
                 }),
+                plugin_id: plugin_id_for_skill_path(&skill.path_to_skills_md),
                 path: skill.path_to_skills_md.clone(),
                 scope: skill.scope.into(),
                 enabled,
             }
         })
         .collect()
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawPluginManifestName {
+    #[serde(default)]
+    name: String,
+}
+
+fn plugin_id_for_skill_path(path: &AbsolutePathBuf) -> Option<String> {
+    const MANIFEST_PATHS: &[&str] = &[".codex-plugin/plugin.json", ".claude-plugin/plugin.json"];
+
+    for ancestor in path.as_path().ancestors() {
+        for relative_manifest_path in MANIFEST_PATHS {
+            let manifest_path = ancestor.join(relative_manifest_path);
+            if !manifest_path.is_file() {
+                continue;
+            }
+            let contents = std::fs::read_to_string(&manifest_path).ok()?;
+            let RawPluginManifestName { name: raw_name } = serde_json::from_str(&contents).ok()?;
+            return Some(
+                ancestor
+                    .file_name()
+                    .and_then(|entry| entry.to_str())
+                    .filter(|_| raw_name.trim().is_empty())
+                    .unwrap_or(raw_name.as_str())
+                    .to_string(),
+            );
+        }
+    }
+    None
 }
 
 fn hooks_to_info(hooks: &[codex_hooks::HookListEntry]) -> Vec<HookMetadata> {

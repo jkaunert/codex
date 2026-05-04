@@ -12323,6 +12323,12 @@
         "path": {
           "$ref": "#/definitions/AbsolutePathBuf"
         },
+        "pluginId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "scope": {
           "$ref": "#/definitions/SkillScope"
         },

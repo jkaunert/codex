@@ -347,6 +347,7 @@ async fn skills_list_loads_remote_installed_plugin_skills_from_cache() -> Result
         std::fs::canonicalize(skill.path.as_path())?,
         expected_skill_path
     );
+    assert_eq!(skill.plugin_id.as_deref(), Some("linear"));
     assert_eq!(skill.enabled, true);
     Ok(())
 }

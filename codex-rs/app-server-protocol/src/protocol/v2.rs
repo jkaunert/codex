@@ -4723,6 +4723,9 @@ pub struct SkillMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub dependencies: Option<SkillDependencies>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub plugin_id: Option<String>,
     pub path: AbsolutePathBuf,
     pub scope: SkillScope,
     pub enabled: bool,
@@ -5041,6 +5044,7 @@ impl From<CoreSkillMetadata> for SkillMetadata {
             short_description: value.short_description,
             interface: value.interface.map(SkillInterface::from),
             dependencies: value.dependencies.map(SkillDependencies::from),
+            plugin_id: None,
             path: value.path,
             scope: value.scope.into(),
             enabled: true,
