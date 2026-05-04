@@ -1,4 +1,5 @@
 use super::*;
+use codex_exec_server::ExecutorFileSystem;
 
 #[derive(Clone)]
 pub(crate) struct CatalogRequestProcessor {
@@ -9,50 +10,53 @@ pub(crate) struct CatalogRequestProcessor {
     pub(super) workspace_settings_cache: Arc<workspace_settings::WorkspaceSettingsCache>,
 }
 
-fn skills_to_info(
+async fn skills_to_info(
     skills: &[codex_core::skills::SkillMetadata],
     disabled_paths: &HashSet<AbsolutePathBuf>,
+    fs: &dyn ExecutorFileSystem,
 ) -> Vec<codex_app_server_protocol::SkillMetadata> {
-    skills
-        .iter()
-        .map(|skill| {
-            let enabled = !disabled_paths.contains(&skill.path_to_skills_md);
-            codex_app_server_protocol::SkillMetadata {
-                name: skill.name.clone(),
-                description: skill.description.clone(),
-                short_description: skill.short_description.clone(),
-                interface: skill.interface.clone().map(|interface| {
-                    codex_app_server_protocol::SkillInterface {
-                        display_name: interface.display_name,
-                        short_description: interface.short_description,
-                        icon_small: interface.icon_small,
-                        icon_large: interface.icon_large,
-                        brand_color: interface.brand_color,
-                        default_prompt: interface.default_prompt,
-                    }
-                }),
-                dependencies: skill.dependencies.clone().map(|dependencies| {
-                    codex_app_server_protocol::SkillDependencies {
-                        tools: dependencies
-                            .tools
-                            .into_iter()
-                            .map(|tool| codex_app_server_protocol::SkillToolDependency {
-                                r#type: tool.r#type,
-                                value: tool.value,
-                                description: tool.description,
-                                transport: tool.transport,
-                                command: tool.command,
-                                url: tool.url,
-                            })
-                            .collect(),
-                    }
-                }),
-                path: skill.path_to_skills_md.clone(),
-                scope: skill.scope.into(),
-                enabled,
-            }
-        })
-        .collect()
+    let mut skill_metadata = Vec::with_capacity(skills.len());
+    for skill in skills {
+        let enabled = !disabled_paths.contains(&skill.path_to_skills_md);
+        let plugin_id =
+            codex_plugin::plugin_namespace_for_skill_path(fs, &skill.path_to_skills_md).await;
+        skill_metadata.push(codex_app_server_protocol::SkillMetadata {
+            name: skill.name.clone(),
+            description: skill.description.clone(),
+            short_description: skill.short_description.clone(),
+            interface: skill.interface.clone().map(|interface| {
+                codex_app_server_protocol::SkillInterface {
+                    display_name: interface.display_name,
+                    short_description: interface.short_description,
+                    icon_small: interface.icon_small,
+                    icon_large: interface.icon_large,
+                    brand_color: interface.brand_color,
+                    default_prompt: interface.default_prompt,
+                }
+            }),
+            dependencies: skill.dependencies.clone().map(|dependencies| {
+                codex_app_server_protocol::SkillDependencies {
+                    tools: dependencies
+                        .tools
+                        .into_iter()
+                        .map(|tool| codex_app_server_protocol::SkillToolDependency {
+                            r#type: tool.r#type,
+                            value: tool.value,
+                            description: tool.description,
+                            transport: tool.transport,
+                            command: tool.command,
+                            url: tool.url,
+                        })
+                        .collect(),
+                }
+            }),
+            path: skill.path_to_skills_md.clone(),
+            scope: skill.scope.into(),
+            plugin_id,
+            enabled,
+        });
+    }
+    skill_metadata
 }
 
 fn hooks_to_info(hooks: &[codex_hooks::HookListEntry]) -> Vec<HookMetadata> {
@@ -475,7 +479,9 @@ impl CatalogRequestProcessor {
                 )
                 .await;
             let errors = errors_to_info(&outcome.errors);
-            let skills = skills_to_info(&outcome.skills, &outcome.disabled_paths);
+            let skill_metadata_fs = fs.as_deref().unwrap_or(LOCAL_FS.as_ref());
+            let skills =
+                skills_to_info(&outcome.skills, &outcome.disabled_paths, skill_metadata_fs).await;
             data.push(codex_app_server_protocol::SkillsListEntry {
                 cwd,
                 skills,
