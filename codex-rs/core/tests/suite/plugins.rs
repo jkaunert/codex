@@ -138,7 +138,7 @@ fn write_plugin_skill_plugin(home: &TempDir) -> std::path::PathBuf {
     skill_dir.join("SKILL.md")
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn desktop_top_level_skill_injection_injects_apple_plugin_orchestrator() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -204,7 +204,7 @@ async fn desktop_top_level_skill_injection_injects_apple_plugin_orchestrator() -
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn desktop_top_level_skill_injection_prepends_owner_for_explicit_downstream_route()
 -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -293,7 +293,7 @@ async fn desktop_top_level_skill_injection_prepends_owner_for_explicit_downstrea
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test]
 async fn desktop_top_level_skill_injection_keeps_focused_specialist_isolated() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
