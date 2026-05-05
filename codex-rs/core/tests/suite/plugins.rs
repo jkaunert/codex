@@ -169,7 +169,11 @@ async fn desktop_top_level_skill_injection_injects_apple_plugin_orchestrator() -
     let test = builder.build(&server).await?;
 
     test.codex
-        .set_app_server_client_info(Some("desktop-client".to_string()), Some("test".to_string()))
+        .set_app_server_client_info(
+            Some("desktop-client".to_string()),
+            Some("test".to_string()),
+            false,
+        )
         .await?;
 
     test.codex
@@ -235,7 +239,11 @@ async fn desktop_top_level_skill_injection_prepends_owner_for_explicit_downstrea
     let test = builder.build(&server).await?;
 
     test.codex
-        .set_app_server_client_info(Some("desktop-client".to_string()), Some("test".to_string()))
+        .set_app_server_client_info(
+            Some("desktop-client".to_string()),
+            Some("test".to_string()),
+            false,
+        )
         .await?;
 
     test.codex
@@ -319,7 +327,11 @@ async fn desktop_top_level_skill_injection_keeps_focused_specialist_isolated() -
     let test = builder.build(&server).await?;
 
     test.codex
-        .set_app_server_client_info(Some("desktop-client".to_string()), Some("test".to_string()))
+        .set_app_server_client_info(
+            Some("desktop-client".to_string()),
+            Some("test".to_string()),
+            false,
+        )
         .await?;
 
     test.codex
