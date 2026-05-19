@@ -185,6 +185,7 @@ async fn desktop_top_level_skill_injection_injects_apple_plugin_orchestrator() -
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
 
@@ -261,6 +262,7 @@ async fn desktop_top_level_skill_injection_prepends_owner_for_explicit_downstrea
             ],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
 
@@ -346,6 +348,7 @@ async fn desktop_top_level_skill_injection_keeps_focused_specialist_isolated() -
             }],
             final_output_json_schema: None,
             responsesapi_client_metadata: None,
+            thread_settings: Default::default(),
         })
         .await?;
 
