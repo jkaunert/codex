@@ -36,7 +36,6 @@ use crate::mentions::build_skill_name_counts;
 use crate::mentions::collect_explicit_app_ids;
 use crate::mentions::collect_explicit_plugin_mentions;
 use crate::mentions::collect_tool_mentions_from_messages;
-use crate::maybe_collect_desktop_top_level_skill_injection;
 use crate::plugins::build_plugin_injections;
 use crate::session::PreviousTurnSettings;
 use crate::session::TurnInput;
