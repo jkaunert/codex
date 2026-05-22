@@ -395,6 +395,23 @@ pub enum SkillScope {
     Admin,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+#[ts(export_to = "v2/")]
+pub enum SkillProvenance {
+    Personal,
+    Project,
+    System,
+    Admin,
+    OpenaiMarketplace,
+    WorkspaceMarketplace,
+    CustomMarketplace,
+    LocalPlugin,
+    DebugPlugin,
+    AdHocPlugin,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -413,7 +430,24 @@ pub struct SkillMetadata {
     pub dependencies: Option<SkillDependencies>,
     pub path: AbsolutePathBuf,
     pub scope: SkillScope,
+    pub provenance: SkillProvenance,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub plugin: Option<SkillPluginMetadata>,
     pub enabled: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct SkillPluginMetadata {
+    pub id: String,
+    pub name: String,
+    pub marketplace_name: String,
+    pub display_name: Option<String>,
+    pub brand_color: Option<String>,
+    pub composer_icon: Option<AbsolutePathBuf>,
+    pub logo: Option<AbsolutePathBuf>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -758,6 +792,7 @@ pub struct PluginUninstallResponse {}
 
 impl From<CoreSkillMetadata> for SkillMetadata {
     fn from(value: CoreSkillMetadata) -> Self {
+        let provenance = value.scope.into();
         Self {
             name: value.name,
             description: value.description,
@@ -766,7 +801,20 @@ impl From<CoreSkillMetadata> for SkillMetadata {
             dependencies: value.dependencies.map(SkillDependencies::from),
             path: value.path,
             scope: value.scope.into(),
+            provenance,
+            plugin: None,
             enabled: true,
+        }
+    }
+}
+
+impl From<CoreSkillScope> for SkillProvenance {
+    fn from(value: CoreSkillScope) -> Self {
+        match value {
+            CoreSkillScope::User => Self::Personal,
+            CoreSkillScope::Repo => Self::Project,
+            CoreSkillScope::System => Self::System,
+            CoreSkillScope::Admin => Self::Admin,
         }
     }
 }

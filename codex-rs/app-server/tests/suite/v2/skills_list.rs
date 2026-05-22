@@ -12,6 +12,7 @@ use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::PluginListParams;
 use codex_app_server_protocol::PluginListResponse;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::SkillProvenance;
 use codex_app_server_protocol::SkillsChangedNotification;
 use codex_app_server_protocol::SkillsListParams;
 use codex_app_server_protocol::SkillsListResponse;
@@ -311,6 +312,12 @@ async fn skills_list_loads_remote_installed_plugin_skills_from_cache() -> Result
         std::fs::canonicalize(skill.path.as_path())?,
         expected_skill_path
     );
+    assert_eq!(skill.provenance, SkillProvenance::OpenaiMarketplace);
+    let plugin = skill.plugin.as_ref().expect("expected plugin metadata");
+    assert_eq!(plugin.id, "linear@openai-curated-remote");
+    assert_eq!(plugin.name, "linear");
+    assert_eq!(plugin.marketplace_name, "openai-curated-remote");
+    assert_eq!(plugin.display_name.as_deref(), Some("linear"));
     assert_eq!(skill.enabled, true);
     Ok(())
 }
