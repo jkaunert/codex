@@ -152,7 +152,7 @@ impl ThreadGoalRequestProcessor {
         params: ThreadGoalGetParams,
     ) -> Result<ThreadGoalGetResponse, JSONRPCErrorError> {
         if !self.config.features.enabled(Feature::Goals) {
-            return Err(invalid_request("goals feature is disabled"));
+            return Ok(ThreadGoalGetResponse { goal: None });
         }
 
         let thread_id = parse_thread_id_for_request(params.thread_id.as_str())?;
