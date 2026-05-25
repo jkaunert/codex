@@ -725,6 +725,7 @@ pub enum ContentItem {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum ImageDetail {
+    #[serde(alias = "auto")]
     High,
     Original,
 }
@@ -1651,6 +1652,14 @@ mod tests {
         0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 11, 73, 68, 65, 84, 120, 156, 99, 96, 0, 2, 0, 0, 5, 0,
         1, 122, 94, 171, 63, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
     ];
+
+    #[test]
+    fn image_detail_deserializes_legacy_auto_as_high() -> Result<()> {
+        let detail: ImageDetail = serde_json::from_str(r#""auto""#)?;
+
+        assert_eq!(detail, ImageDetail::High);
+        Ok(())
+    }
 
     #[test]
     fn response_input_message_conversion_preserves_phase() {
