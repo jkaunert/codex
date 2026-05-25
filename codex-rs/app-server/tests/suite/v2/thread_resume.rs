@@ -32,6 +32,7 @@ use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::ThreadGoalClearResponse;
+use codex_app_server_protocol::ThreadGoalGetResponse;
 use codex_app_server_protocol::ThreadGoalSetResponse;
 use codex_app_server_protocol::ThreadGoalStatus;
 use codex_app_server_protocol::ThreadItem;
@@ -769,6 +770,42 @@ async fn goal_first_live_thread_appears_in_state_db_thread_list() -> Result<()> 
             .collect::<Vec<_>>(),
         vec![&thread.id]
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_goal_get_returns_none_when_goals_are_disabled() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri())?;
+    let thread_id = create_fake_rollout(
+        codex_home.path(),
+        "2025-01-05T12-00-00",
+        "2025-01-05T12:00:00Z",
+        "Saved user message",
+        Some("mock_provider"),
+        /*git_info*/ None,
+    )?;
+
+    let mut mcp = TestAppServer::new_without_managed_config(codex_home.path()).await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let goal_id = mcp
+        .send_raw_request(
+            "thread/goal/get",
+            Some(json!({
+                "threadId": thread_id,
+            })),
+        )
+        .await?;
+    let goal_resp: JSONRPCResponse = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(goal_id)),
+    )
+    .await??;
+    let goal: ThreadGoalGetResponse = to_response(goal_resp)?;
+    assert_eq!(None, goal.goal);
 
     Ok(())
 }
