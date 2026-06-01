@@ -22,7 +22,7 @@ pub(super) fn should_redact_thread_resume_payloads(client_name: Option<&str>) ->
 pub(super) fn redact_thread_resume_payloads(turns: &mut Vec<Turn>) {
     cap_remote_resume_turns(turns);
 
-    for turn in turns {
+    for turn in &mut *turns {
         turn.items.retain_mut(|item| match item {
             ThreadItem::UserMessage { content, .. } => {
                 redact_user_inputs(content);
