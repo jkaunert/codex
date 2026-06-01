@@ -66,12 +66,20 @@ const TEST_INSTALLATION_ID: &str = "11111111-1111-4111-8111-111111111111";
 
 fn test_model_client(session_source: SessionSource) -> ModelClient {
     let provider = create_oss_provider_with_base_url("https://example.com/v1", WireApi::Responses);
-    test_model_client_with_provider(session_source, provider)
+    test_model_client_with_provider_and_parent(session_source, provider, parent_thread_id)
 }
 
 fn test_model_client_with_provider(
     session_source: SessionSource,
     provider: codex_model_provider_info::ModelProviderInfo,
+) -> ModelClient {
+    test_model_client_with_provider_and_parent(session_source, provider, None)
+}
+
+fn test_model_client_with_provider_and_parent(
+    session_source: SessionSource,
+    provider: codex_model_provider_info::ModelProviderInfo,
+    parent_thread_id: Option<ThreadId>,
 ) -> ModelClient {
     let thread_id = ThreadId::new();
     ModelClient::new(
