@@ -273,6 +273,7 @@ mod tests {
         let mut thread = test_thread(vec![
             ThreadItem::UserMessage {
                 id: "user-1".to_string(),
+                client_id: None,
                 content: vec![
                     UserInput::Text {
                         text: long_text.clone(),
