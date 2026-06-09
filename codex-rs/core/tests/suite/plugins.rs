@@ -178,7 +178,6 @@ async fn desktop_top_level_skill_injection_injects_apple_plugin_orchestrator() -
 
     test.codex
         .submit(Op::UserInput {
-            environments: None,
             items: vec![UserInput::Text {
                 text: "Create a new iOS SwiftUI app named SampleApp.".to_string(),
                 text_elements: Vec::new(),
@@ -250,7 +249,6 @@ async fn desktop_top_level_skill_injection_prepends_owner_for_explicit_downstrea
 
     test.codex
         .submit(Op::UserInput {
-            environments: None,
             items: vec![
                 UserInput::Skill {
                     name: format!("${APPLE_REVIEW_ORCHESTRATOR}"),
@@ -340,7 +338,6 @@ async fn desktop_top_level_skill_injection_keeps_focused_specialist_isolated() -
 
     test.codex
         .submit(Op::UserInput {
-            environments: None,
             items: vec![UserInput::Text {
                 text: format!(
                     "[${APPLE_DECISION_STRESS_TEST}]({}) stress test this iOS review decision in isolation.",
