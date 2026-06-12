@@ -235,6 +235,7 @@ mod tests {
             skill_roots,
             disabled_skill_paths: HashSet::new(),
             has_enabled_skills: true,
+            router_selection: None,
             mcp_servers: HashMap::new(),
             apps: Vec::new(),
             hook_sources: Vec::new(),
