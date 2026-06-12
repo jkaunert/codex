@@ -1,5 +1,5 @@
-use codex_config::HooksFile;
 use crate::PluginRouterSelection;
+use codex_config::HooksFile;
 
 /// Parsed plugin metadata parameterized by its resource locator representation.
 ///
