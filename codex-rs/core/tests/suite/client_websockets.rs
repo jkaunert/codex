@@ -2151,6 +2151,7 @@ async fn responses_websocket_lifecycle_details_close_before_completion() {
     let harness = websocket_harness_with_v2(&server, /*runtime_metrics_enabled*/ true).await;
     let mut session = harness.client.new_session();
     let prompt = prompt_with_input(vec![message_item("hello")]);
+    let responses_metadata = turn_metadata(&harness, /*turn_id*/ None);
 
     let mut stream = session
         .stream_with_attempt(
@@ -2160,7 +2161,7 @@ async fn responses_websocket_lifecycle_details_close_before_completion() {
             harness.effort,
             harness.summary,
             /*service_tier*/ None,
-            /*turn_metadata_header*/ None,
+            &responses_metadata,
             /*stream_attempt*/ 7,
             &codex_rollout_trace::InferenceTraceContext::disabled(),
         )

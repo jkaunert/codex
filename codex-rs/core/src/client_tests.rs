@@ -93,7 +93,7 @@ fn test_model_client_with_thread_id(
     session_source: SessionSource,
 ) -> ModelClient {
     let provider = create_oss_provider_with_base_url("https://example.com/v1", WireApi::Responses);
-    test_model_client_with_provider_and_parent(session_source, provider, parent_thread_id)
+    test_model_client_with_provider_and_parent(session_source, provider, None)
 }
 
 fn test_model_client_with_provider(
@@ -106,7 +106,7 @@ fn test_model_client_with_provider(
 fn test_model_client_with_provider_and_parent(
     session_source: SessionSource,
     provider: codex_model_provider_info::ModelProviderInfo,
-    parent_thread_id: Option<ThreadId>,
+    _parent_thread_id: Option<ThreadId>,
 ) -> ModelClient {
     let thread_id = ThreadId::new();
     ModelClient::new(
