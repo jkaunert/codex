@@ -1439,6 +1439,7 @@ mod sampling_attempt_progress_tests {
             role: "assistant".to_string(),
             content: vec![],
             phase: Some(MessagePhase::Commentary),
+            metadata: None,
         };
 
         progress.note_output_item_added(&commentary_item);
@@ -1456,6 +1457,7 @@ mod sampling_attempt_progress_tests {
                 text: "Routing: orchestrator-led".to_string(),
             }],
             phase: Some(MessagePhase::Commentary),
+            metadata: None,
         });
         assert!(!completed_progress.stalled_after_output_item_added_without_visible_output());
     }
