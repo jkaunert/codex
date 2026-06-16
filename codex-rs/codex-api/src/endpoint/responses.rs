@@ -148,7 +148,7 @@ impl<T: HttpTransport> ResponsesClient<T> {
             turn_state,
             /*lifecycle*/ None,
         )
-            .await
+        .await
     }
 
     async fn stream_encoded_with_lifecycle(
