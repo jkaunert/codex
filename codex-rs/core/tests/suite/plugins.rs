@@ -1,6 +1,7 @@
 #![cfg(not(target_os = "windows"))]
 #![allow(clippy::unwrap_used)]
 
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -46,6 +47,32 @@ const APPLE_PLUGIN_DISPLAY_NAME: &str = "apple-appdev-workflow";
 const APPLE_APP_ORCHESTRATOR: &str = "apple-appdev-workflow:apple-app-orchestrator";
 const APPLE_REVIEW_ORCHESTRATOR: &str = "apple-appdev-workflow:apple-review-orchestrator";
 const APPLE_DECISION_STRESS_TEST: &str = "apple-appdev-workflow:apple-decision-stress-test";
+// These integration tests build a full desktop turn request with rendered skill
+// bodies, which can exceed the default test-thread stack on macOS.
+const DESKTOP_TOP_LEVEL_INJECTION_TEST_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
+
+fn run_desktop_top_level_injection_test<Fut>(
+    name: &'static str,
+    test: impl FnOnce() -> Fut + Send + 'static,
+) -> Result<()>
+where
+    Fut: Future<Output = Result<()>> + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(DESKTOP_TOP_LEVEL_INJECTION_TEST_STACK_SIZE_BYTES)
+        .spawn(move || -> Result<()> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(test())
+        })?;
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!("{name} thread panicked")),
+    }
+}
 
 fn sample_plugin_root(home: &TempDir) -> std::path::PathBuf {
     home.path().join("plugins/cache/test/sample/local")
@@ -149,8 +176,15 @@ fn write_plugin_skill_plugin(home: &TempDir) -> std::path::PathBuf {
     skill_dir.join("SKILL.md")
 }
 
-#[tokio::test]
-async fn desktop_top_level_skill_injection_injects_apple_plugin_orchestrator() -> Result<()> {
+#[test]
+fn desktop_top_level_skill_injection_injects_apple_plugin_orchestrator() -> Result<()> {
+    run_desktop_top_level_injection_test(
+        "desktop_top_level_skill_injection_injects_apple_plugin_orchestrator",
+        desktop_top_level_skill_injection_injects_apple_plugin_orchestrator_impl,
+    )
+}
+
+async fn desktop_top_level_skill_injection_injects_apple_plugin_orchestrator_impl() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -216,8 +250,15 @@ async fn desktop_top_level_skill_injection_injects_apple_plugin_orchestrator() -
     Ok(())
 }
 
-#[tokio::test]
-async fn desktop_top_level_skill_injection_prepends_owner_for_explicit_downstream_route()
+#[test]
+fn desktop_top_level_skill_injection_prepends_owner_for_explicit_downstream_route() -> Result<()> {
+    run_desktop_top_level_injection_test(
+        "desktop_top_level_skill_injection_prepends_owner_for_explicit_downstream_route",
+        desktop_top_level_skill_injection_prepends_owner_for_explicit_downstream_route_impl,
+    )
+}
+
+async fn desktop_top_level_skill_injection_prepends_owner_for_explicit_downstream_route_impl()
 -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -306,8 +347,15 @@ async fn desktop_top_level_skill_injection_prepends_owner_for_explicit_downstrea
     Ok(())
 }
 
-#[tokio::test]
-async fn desktop_top_level_skill_injection_keeps_focused_specialist_isolated() -> Result<()> {
+#[test]
+fn desktop_top_level_skill_injection_keeps_focused_specialist_isolated() -> Result<()> {
+    run_desktop_top_level_injection_test(
+        "desktop_top_level_skill_injection_keeps_focused_specialist_isolated",
+        desktop_top_level_skill_injection_keeps_focused_specialist_isolated_impl,
+    )
+}
+
+async fn desktop_top_level_skill_injection_keeps_focused_specialist_isolated_impl() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;

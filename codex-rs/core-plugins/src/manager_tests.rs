@@ -793,6 +793,7 @@ async fn load_plugins_preserves_router_selection_metadata() {
     let outcome = load_plugins_from_config(
         &plugin_config_toml(/*enabled*/ true, /*plugins_feature_enabled*/ true),
         codex_home.path(),
+        None,
     )
     .await;
     let router_selections = outcome.effective_router_selections();

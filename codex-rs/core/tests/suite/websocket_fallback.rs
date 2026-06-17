@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use anyhow::Result;
 use codex_model_provider_info::WireApi;
 use codex_protocol::models::PermissionProfile;
@@ -26,8 +28,42 @@ use wiremock::http::Method;
 use wiremock::matchers::method;
 use wiremock::matchers::path_regex;
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn websocket_fallback_switches_to_http_on_upgrade_required_connect() -> Result<()> {
+const WEBSOCKET_FALLBACK_TEST_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
+
+fn run_websocket_fallback_test<Fut>(
+    name: &'static str,
+    test: impl FnOnce() -> Fut + Send + 'static,
+) -> Result<()>
+where
+    Fut: Future<Output = Result<()>> + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(WEBSOCKET_FALLBACK_TEST_STACK_SIZE_BYTES)
+        .spawn(move || -> Result<()> {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .thread_stack_size(WEBSOCKET_FALLBACK_TEST_STACK_SIZE_BYTES)
+                .enable_all()
+                .build()?;
+            runtime.block_on(test())
+        })?;
+
+    match handle.join() {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!("{name} thread panicked")),
+    }
+}
+
+#[test]
+fn websocket_fallback_switches_to_http_on_upgrade_required_connect() -> Result<()> {
+    run_websocket_fallback_test(
+        "websocket_fallback_switches_to_http_on_upgrade_required_connect",
+        websocket_fallback_switches_to_http_on_upgrade_required_connect_impl,
+    )
+}
+
+async fn websocket_fallback_switches_to_http_on_upgrade_required_connect_impl() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -78,8 +114,15 @@ async fn websocket_fallback_switches_to_http_on_upgrade_required_connect() -> Re
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn websocket_fallback_switches_to_http_after_retries_exhausted() -> Result<()> {
+#[test]
+fn websocket_fallback_switches_to_http_after_retries_exhausted() -> Result<()> {
+    run_websocket_fallback_test(
+        "websocket_fallback_switches_to_http_after_retries_exhausted",
+        websocket_fallback_switches_to_http_after_retries_exhausted_impl,
+    )
+}
+
+async fn websocket_fallback_switches_to_http_after_retries_exhausted_impl() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -123,8 +166,15 @@ async fn websocket_fallback_switches_to_http_after_retries_exhausted() -> Result
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn websocket_fallback_hides_first_websocket_retry_stream_error() -> Result<()> {
+#[test]
+fn websocket_fallback_hides_first_websocket_retry_stream_error() -> Result<()> {
+    run_websocket_fallback_test(
+        "websocket_fallback_hides_first_websocket_retry_stream_error",
+        websocket_fallback_hides_first_websocket_retry_stream_error_impl,
+    )
+}
+
+async fn websocket_fallback_hides_first_websocket_retry_stream_error_impl() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -205,8 +255,15 @@ async fn websocket_fallback_hides_first_websocket_retry_stream_error() -> Result
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn websocket_fallback_is_sticky_across_turns() -> Result<()> {
+#[test]
+fn websocket_fallback_is_sticky_across_turns() -> Result<()> {
+    run_websocket_fallback_test(
+        "websocket_fallback_is_sticky_across_turns",
+        websocket_fallback_is_sticky_across_turns_impl,
+    )
+}
+
+async fn websocket_fallback_is_sticky_across_turns_impl() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
