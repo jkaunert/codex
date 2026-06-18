@@ -1981,6 +1981,7 @@ async fn load_plugin_skills_dedupes_overlapping_manifest_roots() {
             hooks: None,
         },
         interface: None,
+        router_selection: None,
     };
     let plugin_id = PluginId::parse("sample@test").expect("plugin id should parse");
 
