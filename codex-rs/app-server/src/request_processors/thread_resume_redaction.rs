@@ -313,7 +313,7 @@ mod tests {
             ThreadItem::CommandExecution {
                 id: "cmd-1".to_string(),
                 command: "echo kept".to_string(),
-                cwd: test_path_buf("/tmp").abs(),
+                cwd: test_path_buf("/tmp").abs().into(),
                 process_id: None,
                 source: CommandExecutionSource::Agent,
                 status: CommandExecutionStatus::Completed,
