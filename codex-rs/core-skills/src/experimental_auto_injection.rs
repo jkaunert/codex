@@ -9,17 +9,16 @@ use codex_protocol::user_input::UserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use serde::Deserialize;
 
-const DESKTOP_CLIENT_SIGNAL: &str = "desktop";
 const ROUTE_ROLE_TOP_LEVEL_ORCHESTRATOR: &str = "top-level-orchestrator";
 const ROUTE_ROLE_BRIGADE_ORCHESTRATOR: &str = "brigade-orchestrator";
 const ROUTING_SCOPE_BROAD: &str = "broad";
 const ROUTING_SCOPE_DOMAIN: &str = "domain";
 
-/// Experimental desktop-only deterministic top-level skill injection.
+/// Experimental deterministic top-level skill injection.
 ///
 /// This helper is intentionally conservative:
 /// - off unless explicitly enabled by config
-/// - scoped to desktop-like app-server clients
+/// - scoped by each plugin manifest's `routerSelection.hostScopes`
 /// - does not duplicate an explicit top-level owner selection
 /// - preserves narrow explicit specialist selections
 /// - injects at most one manifest-configured top-level router skill
@@ -33,7 +32,7 @@ pub fn maybe_collect_desktop_top_level_skill_injection(
     cwd: &Path,
     enabled: bool,
 ) -> Vec<SkillMetadata> {
-    if !enabled || !is_desktop_client(client_name) {
+    if !enabled || router_selections.is_empty() {
         return Vec::new();
     }
 
@@ -315,12 +314,6 @@ fn has_configured_workspace_signal(cwd: &Path, domain: &PluginRouterSelectionDom
     })
 }
 
-fn is_desktop_client(client_name: Option<&str>) -> bool {
-    client_name
-        .map(|name| name.to_ascii_lowercase().contains(DESKTOP_CLIENT_SIGNAL))
-        .unwrap_or(false)
-}
-
 fn text_contains_prompt_signal(text: &str, signal: &str) -> bool {
     text.match_indices(signal).any(|(start, _)| {
         let before = text[..start].chars().next_back();
@@ -365,9 +358,15 @@ mod tests {
         }
     }
 
-    fn router_selection(select: &str) -> PluginRouterSelection {
+    fn router_selection_with_host_scopes(
+        select: &str,
+        host_scopes: &[&str],
+    ) -> PluginRouterSelection {
         PluginRouterSelection {
-            host_scopes: vec!["desktop".to_string()],
+            host_scopes: host_scopes
+                .iter()
+                .map(|scope| (*scope).to_string())
+                .collect(),
             domains: vec![PluginRouterSelectionDomain {
                 prompt_signals: vec!["kubernetes".to_string()],
                 workspace_files: vec!["kustomization.yaml".to_string()],
@@ -378,9 +377,19 @@ mod tests {
         }
     }
 
-    fn apple_router_selection(select: &str) -> PluginRouterSelection {
+    fn router_selection(select: &str) -> PluginRouterSelection {
+        router_selection_with_host_scopes(select, &["desktop"])
+    }
+
+    fn apple_router_selection_with_host_scopes(
+        select: &str,
+        host_scopes: &[&str],
+    ) -> PluginRouterSelection {
         PluginRouterSelection {
-            host_scopes: vec!["desktop".to_string()],
+            host_scopes: host_scopes
+                .iter()
+                .map(|scope| (*scope).to_string())
+                .collect(),
             domains: vec![PluginRouterSelectionDomain {
                 prompt_signals: vec!["ios".to_string(), "swiftui".to_string()],
                 workspace_files: vec!["Package.swift".to_string()],
@@ -389,6 +398,10 @@ mod tests {
             }],
             ..PluginRouterSelection::default()
         }
+    }
+
+    fn apple_router_selection(select: &str) -> PluginRouterSelection {
+        apple_router_selection_with_host_scopes(select, &["desktop"])
     }
 
     fn write_skill_with_route_metadata(path: &Path, name: &str, role: &str, routing_scope: &str) {
@@ -466,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn non_desktop_client_does_not_inject() {
+    fn non_matching_host_scope_does_not_inject() {
         let tempdir = TempDir::new().expect("tempdir");
         let skill_path =
             AbsolutePathBuf::try_from(tempdir.path().join("SKILL.md")).expect("absolute path");
@@ -488,6 +501,40 @@ mod tests {
         );
 
         assert!(injected.is_empty());
+    }
+
+    #[test]
+    fn xcode_host_scope_injects_top_level_owner_for_xcode_client() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let skill_path =
+            AbsolutePathBuf::try_from(tempdir.path().join("SKILL.md")).expect("absolute path");
+        let skills = vec![make_skill(APPLE_TARGET_SKILL, &skill_path)];
+        let inputs = vec![UserInput::Text {
+            text: "Create a new iOS SwiftUI app.".to_string(),
+            text_elements: Vec::new(),
+        }];
+
+        let injected = maybe_collect_desktop_top_level_skill_injection(
+            &inputs,
+            &[],
+            &skills,
+            &HashSet::new(),
+            &[apple_router_selection_with_host_scopes(
+                APPLE_TARGET_SKILL,
+                &["xcode-headless", "xcode"],
+            )],
+            Some("Xcode CodingAssistant"),
+            tempdir.path(),
+            /*enabled*/ true,
+        );
+
+        assert_eq!(
+            vec![APPLE_TARGET_SKILL.to_string()],
+            injected
+                .into_iter()
+                .map(|skill| skill.name)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
