@@ -377,7 +377,7 @@ fn resolve_interface_asset_path(
 }
 
 fn resolve_router_selection(
-    plugin_root: &Path,
+    plugin_root: &PathUri,
     raw: Option<RawPluginRouterSelection>,
 ) -> Option<PluginRouterSelection> {
     let raw = raw?;
@@ -417,7 +417,7 @@ fn resolve_router_selection(
 }
 
 fn resolve_router_selection_domain(
-    plugin_root: &Path,
+    plugin_root: &PathUri,
     raw: RawPluginRouterSelectionDomain,
 ) -> Option<PluginRouterSelectionDomain> {
     let select = raw.select.trim().to_string();
@@ -453,14 +453,21 @@ fn non_empty_strings(values: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-fn warn_invalid_router_selection(plugin_root: &Path, message: &str) {
-    if let Some(manifest_path) = find_plugin_manifest_path(plugin_root) {
+fn warn_invalid_router_selection(plugin_root: &PathUri, message: &str) {
+    let plugin_root_path = plugin_root.to_abs_path().ok();
+    if let Some(manifest_path) = plugin_root_path
+        .as_ref()
+        .and_then(|path| find_plugin_manifest_path(path.as_path()))
+    {
         tracing::warn!(
             path = %manifest_path.display(),
             "ignoring routerSelection: {message}"
         );
     } else {
-        tracing::warn!("ignoring routerSelection: {message}");
+        tracing::warn!(
+            plugin_root = %plugin_root,
+            "ignoring routerSelection: {message}"
+        );
     }
 }
 
