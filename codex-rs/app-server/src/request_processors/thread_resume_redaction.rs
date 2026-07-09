@@ -350,7 +350,7 @@ mod tests {
             },
             ThreadItem::ImageView {
                 id: "image-view-1".to_string(),
-                path: test_path_buf("/tmp/view.png").abs(),
+                path: test_path_buf("/tmp/view.png").abs().into(),
             },
         ]);
 
