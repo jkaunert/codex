@@ -485,9 +485,6 @@
             "deferred_executor": {
               "type": "boolean"
             },
-            "desktop_deterministic_top_level_skill_injection": {
-              "type": "boolean"
-            },
             "elevated_windows_sandbox": {
               "type": "boolean"
             },
@@ -4858,9 +4855,6 @@
           "type": "boolean"
         },
         "deferred_executor": {
-          "type": "boolean"
-        },
-        "desktop_deterministic_top_level_skill_injection": {
           "type": "boolean"
         },
         "elevated_windows_sandbox": {

@@ -8,7 +8,6 @@ use crate::AppConnectorId;
 use crate::AppDeclaration;
 use crate::PluginCapabilitySummary;
 use crate::PluginHookSource;
-use crate::PluginRouterSelection;
 use crate::app_connector_ids_from_declarations;
 
 const MAX_CAPABILITY_SUMMARY_DESCRIPTION_LEN: usize = 1024;
@@ -25,7 +24,6 @@ pub struct LoadedPlugin<M> {
     pub skill_roots: Vec<AbsolutePathBuf>,
     pub disabled_skill_paths: HashSet<AbsolutePathBuf>,
     pub has_enabled_skills: bool,
-    pub router_selection: Option<PluginRouterSelection>,
     pub mcp_servers: HashMap<String, M>,
     pub apps: Vec<AppDeclaration>,
     pub hook_sources: Vec<PluginHookSource>,
@@ -185,14 +183,6 @@ impl<M: Clone> PluginLoadOutcome<M> {
             .collect()
     }
 
-    pub fn effective_router_selections(&self) -> Vec<PluginRouterSelection> {
-        self.plugins
-            .iter()
-            .filter(|plugin| plugin.is_active())
-            .filter_map(|plugin| plugin.router_selection.clone())
-            .collect()
-    }
-
     pub fn capability_summaries(&self) -> &[PluginCapabilitySummary] {
         &self.capability_summaries
     }
@@ -245,7 +235,6 @@ mod tests {
             skill_roots,
             disabled_skill_paths: HashSet::new(),
             has_enabled_skills: true,
-            router_selection: None,
             mcp_servers: HashMap::new(),
             apps: Vec::new(),
             hook_sources: Vec::new(),

@@ -9,7 +9,6 @@ mod load_outcome;
 pub mod manifest;
 mod plugin_id;
 mod provider;
-mod router_selection;
 
 use codex_config::HookEventsToml;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -25,9 +24,6 @@ pub use provider::PluginResourceLocator;
 pub use provider::ResolvedPlugin;
 pub use provider::ResolvedPluginError;
 pub use provider::ResolvedPluginLocation;
-pub use router_selection::PluginRouterSelection;
-pub use router_selection::PluginRouterSelectionDomain;
-pub use router_selection::PluginRouterSelectionSuppression;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AppConnectorId(pub String);
